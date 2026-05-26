@@ -465,29 +465,28 @@ void Vst3Bridge::run() {
                 // Carla calls bindToDocumentController() directly without
                 // first calling createDocumentControllerWithDocument() on our
                 // proxy. We must call createDocumentControllerWithDocument()
-                // here ourselves, using a stub host instance whose callbacks
-                // return safe values (silence for audio, no-ops for archiving).
-                // The nested-thread + message-pump pattern is required because
-                // Melodyne posts Win32 messages to itself during init.
+                // here ourselves, and because this may synchronously call back
+                // into the host, this has to happen on a dedicated worker
+                // thread so this IPC handler thread can stay unblocked.
                 if (!get_instance(request.instance_id)
                          .first.ara_document_controller_instance) {
-                    std::promise<bool> created_promise;
-                    auto created_future = created_promise.get_future();
+                    std::promise<native_size_t> bind_result_promise;
+                    auto bind_result_future = bind_result_promise.get_future();
 
-                    auto create_fn = fu2::unique_function<void()>(
-                        [&, promise = std::move(created_promise)]() mutable {
+                    auto bind_fn = fu2::unique_function<void()>(
+                        [&, promise = std::move(bind_result_promise)]() mutable {
                             OleInitialize(nullptr);
-                            logger_.log(
-                                "NOTE: BindToDocumentController: "
-                                "CreateThread lambda started");
                             const auto& [instance, _] =
                                 get_instance(request.instance_id);
 
                             Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
                                 entry_point(instance.object);
                             if (!entry_point) {
+                                logger_.log(
+                                    "WARNING: BindToDocumentController: instance "
+                                    "does not support ARA::IPlugInEntryPoint");
                                 OleUninitialize();
-                                promise.set_value(false);
+                                promise.set_value(0);
                                 return;
                             }
 
@@ -501,15 +500,10 @@ void Vst3Bridge::run() {
                                     "factory has no "
                                     "createDocumentControllerWithDocument");
                                 OleUninitialize();
-                                promise.set_value(false);
+                                promise.set_value(0);
                                 return;
                             }
 
-                            // Create a stub host instance. The stubs return
-                            // silence for audio reads (kARATrue + zeroed
-                            // buffers) so Melodyne doesn't abort init.
-                            // Pass carla's documentControllerRef as the
-                            // routing key for IPC callbacks.
                             instance.ara_document_controller_host_instance =
                                 std::make_unique<
                                     WineARADocumentControllerHostInstance>(
@@ -524,105 +518,79 @@ void Vst3Bridge::run() {
                                     ARADocumentProperties, name));
                             props.name = nullptr;
 
-                            // Force-create a message queue on this thread.
-                            {
-                                MSG dummy;
-                                PeekMessageW(&dummy, nullptr, 0, 0,
-                                             PM_NOREMOVE);
-                            }
-
-                            std::promise<const ARA::ARADocumentControllerInstance*>
-                                ctrl_promise;
-                            auto ctrl_future = ctrl_promise.get_future();
-
-                            auto inner_fn = fu2::unique_function<void()>(
-                                [&, p = std::move(ctrl_promise)]() mutable {
-                                    // Initialize COM as STA on this thread so
-                                    // Melodyne's internal COM calls work.
-                                    OleInitialize(nullptr);
-                                    logger_.log(
-                                        "NOTE: BindToDocumentController: "
-                                        "calling "
-                                        "createDocumentControllerWithDocument()");
-                                    const ARA::ARADocumentControllerInstance*
-                                        ctrl =
-                                            factory
-                                                ->createDocumentControllerWithDocument(
-                                                    instance
-                                                        .ara_document_controller_host_instance
-                                                        ->get(),
-                                                    &props);
-                                    logger_.log(
-                                        ctrl
-                                            ? "NOTE: BindToDocumentController: "
-                                              "createDocumentControllerWithDocument() succeeded"
-                                            : "WARNING: BindToDocumentController: "
-                                              "createDocumentControllerWithDocument() returned null");
-                                    OleUninitialize();
-                                    p.set_value(ctrl);
-                                });
-
-                            // 32MB stack — same as outer thread, Melodyne needs it.
-                            constexpr SIZE_T inner_stack = 32 * 1024 * 1024;
-                            HANDLE inner_handle = CreateThread(
-                                nullptr, inner_stack,
-                                reinterpret_cast<LPTHREAD_START_ROUTINE>(
-                                    win32_thread_trampoline),
-                                new fu2::unique_function<void()>(
-                                    std::move(inner_fn)),
-                                0, nullptr);
-
-                            if (inner_handle) {
-                                DWORD wr;
-                                do {
-                                    wr = MsgWaitForMultipleObjects(
-                                        1, &inner_handle, FALSE, INFINITE,
-                                        QS_ALLINPUT);
-                                    if (wr == WAIT_OBJECT_0 + 1) {
-                                        MSG msg;
-                                        while (PeekMessageW(&msg, nullptr, 0,
-                                                            0, PM_REMOVE)) {
-                                            TranslateMessage(&msg);
-                                            DispatchMessageW(&msg);
-                                        }
-                                    }
-                                } while (wr != WAIT_OBJECT_0 &&
-                                         wr != WAIT_FAILED);
-                                CloseHandle(inner_handle);
-                            }
-
+                            logger_.log(
+                                "NOTE: BindToDocumentController: calling "
+                                "createDocumentControllerWithDocument()");
                             const ARA::ARADocumentControllerInstance* ctrl =
-                                ctrl_future.get();
+                                factory->createDocumentControllerWithDocument(
+                                    instance
+                                        .ara_document_controller_host_instance
+                                        ->get(),
+                                    &props);
+                            logger_.log(
+                                ctrl
+                                    ? "NOTE: BindToDocumentController: "
+                                      "createDocumentControllerWithDocument() succeeded"
+                                    : "WARNING: BindToDocumentController: "
+                                      "createDocumentControllerWithDocument() returned null");
 
                             if (!ctrl) {
                                 instance.ara_document_controller_host_instance
                                     .reset();
                                 OleUninitialize();
-                                promise.set_value(false);
+                                promise.set_value(0);
                                 return;
                             }
 
                             instance.ara_document_controller_instance = ctrl;
+
+                            const ARA::ARADocumentControllerRef wine_ref =
+                                ctrl->documentControllerRef;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+                            const ARA::ARAPlugInExtensionInstance* ext =
+                                entry_point->bindToDocumentController(wine_ref);
+#pragma GCC diagnostic pop
+
+                            if (!ext) {
+                                logger_.log(
+                                    "WARNING: BindToDocumentController: Windows "
+                                    "plugin returned nullptr for "
+                                    "ARAPlugInExtensionInstance");
+                                OleUninitialize();
+                                promise.set_value(0);
+                                return;
+                            }
+
+                            instance.ara_plug_in_extension = ext;
+                            logger_.log(
+                                "NOTE: BindToDocumentController: succeeded");
                             OleUninitialize();
-                            promise.set_value(true);
+                            promise.set_value(1);
                         });
 
                     constexpr SIZE_T ara_stack_size = 32 * 1024 * 1024;
                     HANDLE thread_handle = CreateThread(
-                        nullptr, ara_stack_size,
+                        nullptr,
+                        ara_stack_size,
                         reinterpret_cast<LPTHREAD_START_ROUTINE>(
                             win32_thread_trampoline),
-                        new fu2::unique_function<void()>(std::move(create_fn)),
-                        0, nullptr);
-
-                    if (thread_handle) {
-                        WaitForSingleObject(thread_handle, INFINITE);
-                        CloseHandle(thread_handle);
-                    }
-
-                    if (!created_future.get()) {
+                        new fu2::unique_function<void()>(std::move(bind_fn)),
+                        0,
+                        nullptr);
+                    if (!thread_handle) {
                         return PrimitiveResponse<native_size_t>(0);
                     }
+
+                    WaitForSingleObject(thread_handle, INFINITE);
+                    CloseHandle(thread_handle);
+
+                    if (!bind_result_future.get()) {
+                        return PrimitiveResponse<native_size_t>(0);
+                    }
+
+                    return PrimitiveResponse<native_size_t>(1);
                 }
 
                 return do_mutual_recursion_on_gui_thread(
@@ -683,29 +651,38 @@ void Vst3Bridge::run() {
                 // Same pattern as BindToDocumentController above.
                 if (!get_instance(request.instance_id)
                          .first.ara_document_controller_instance) {
-                    std::promise<bool> created_promise;
-                    auto created_future = created_promise.get_future();
+                    std::promise<native_size_t> bind_result_promise;
+                    auto bind_result_future = bind_result_promise.get_future();
 
-                    auto create_fn = fu2::unique_function<void()>(
-                        [&, promise = std::move(created_promise)]() mutable {
+                    auto bind_fn = fu2::unique_function<void()>(
+                        [&, promise = std::move(bind_result_promise)]() mutable {
                             OleInitialize(nullptr);
                             const auto& [instance, _] =
                                 get_instance(request.instance_id);
 
                             Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                                ep(instance.object);
-                            if (!ep) {
+                                entry_point(instance.object);
+                            if (!entry_point) {
+                                logger_.log(
+                                    "WARNING: BindToDocumentControllerWithRoles: "
+                                    "instance supports neither "
+                                    "IPlugInEntryPoint nor IPlugInEntryPoint2");
                                 OleUninitialize();
-                                promise.set_value(false);
+                                promise.set_value(0);
                                 return;
                             }
 
-                            const ARA::ARAFactory* factory = ep->getFactory();
+                            const ARA::ARAFactory* factory =
+                                entry_point->getFactory();
                             if (!factory ||
                                 !factory
                                      ->createDocumentControllerWithDocument) {
+                                logger_.log(
+                                    "WARNING: BindToDocumentControllerWithRoles: "
+                                    "factory has no "
+                                    "createDocumentControllerWithDocument");
                                 OleUninitialize();
-                                promise.set_value(false);
+                                promise.set_value(0);
                                 return;
                             }
 
@@ -723,92 +700,92 @@ void Vst3Bridge::run() {
                                     ARADocumentProperties, name));
                             props.name = nullptr;
 
-                            {
-                                MSG dummy;
-                                PeekMessageW(&dummy, nullptr, 0, 0,
-                                             PM_NOREMOVE);
-                            }
-
-                            std::promise<const ARA::ARADocumentControllerInstance*>
-                                ctrl_promise;
-                            auto ctrl_future = ctrl_promise.get_future();
-
-                            auto inner_fn = fu2::unique_function<void()>(
-                                [&, p = std::move(ctrl_promise)]() mutable {
-                                    OleInitialize(nullptr);
-                                    const ARA::ARADocumentControllerInstance*
-                                        ctrl =
-                                            factory
-                                                ->createDocumentControllerWithDocument(
-                                                    instance
-                                                        .ara_document_controller_host_instance
-                                                        ->get(),
-                                                    &props);
-                                    OleUninitialize();
-                                    p.set_value(ctrl);
-                                });
-
-                            // 32MB stack — same as outer thread, Melodyne needs it.
-                            constexpr SIZE_T inner_stack = 32 * 1024 * 1024;
-                            HANDLE inner_handle = CreateThread(
-                                nullptr, inner_stack,
-                                reinterpret_cast<LPTHREAD_START_ROUTINE>(
-                                    win32_thread_trampoline),
-                                new fu2::unique_function<void()>(
-                                    std::move(inner_fn)),
-                                0, nullptr);
-
-                            if (inner_handle) {
-                                DWORD wr;
-                                do {
-                                    wr = MsgWaitForMultipleObjects(
-                                        1, &inner_handle, FALSE, INFINITE,
-                                        QS_ALLINPUT);
-                                    if (wr == WAIT_OBJECT_0 + 1) {
-                                        MSG msg;
-                                        while (PeekMessageW(&msg, nullptr, 0,
-                                                            0, PM_REMOVE)) {
-                                            TranslateMessage(&msg);
-                                            DispatchMessageW(&msg);
-                                        }
-                                    }
-                                } while (wr != WAIT_OBJECT_0 &&
-                                         wr != WAIT_FAILED);
-                                CloseHandle(inner_handle);
-                            }
-
+                            logger_.log(
+                                "NOTE: BindToDocumentControllerWithRoles: "
+                                "calling "
+                                "createDocumentControllerWithDocument()");
                             const ARA::ARADocumentControllerInstance* ctrl =
-                                ctrl_future.get();
+                                factory->createDocumentControllerWithDocument(
+                                    instance
+                                        .ara_document_controller_host_instance
+                                        ->get(),
+                                    &props);
+                            logger_.log(
+                                ctrl
+                                    ? "NOTE: BindToDocumentControllerWithRoles: "
+                                      "createDocumentControllerWithDocument() succeeded"
+                                    : "WARNING: BindToDocumentControllerWithRoles: "
+                                      "createDocumentControllerWithDocument() returned null");
 
                             if (!ctrl) {
                                 instance.ara_document_controller_host_instance
                                     .reset();
                                 OleUninitialize();
-                                promise.set_value(false);
+                                promise.set_value(0);
                                 return;
                             }
 
                             instance.ara_document_controller_instance = ctrl;
+
+                            const ARA::ARADocumentControllerRef wine_ref =
+                                ctrl->documentControllerRef;
+
+                            Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint2>
+                                entry_point2(instance.object);
+                            const ARA::ARAPlugInExtensionInstance* ext = nullptr;
+                            if (entry_point2) {
+                                ext = entry_point2
+                                          ->bindToDocumentControllerWithRoles(
+                                              wine_ref,
+                                              request.known_roles,
+                                              request.assigned_roles);
+                            } else {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+                                ext = entry_point->bindToDocumentController(
+                                    wine_ref);
+#pragma GCC diagnostic pop
+                            }
+
+                            if (!ext) {
+                                logger_.log(
+                                    "WARNING: BindToDocumentControllerWithRoles: "
+                                    "Windows plugin returned nullptr for "
+                                    "ARAPlugInExtensionInstance");
+                                OleUninitialize();
+                                promise.set_value(0);
+                                return;
+                            }
+
+                            instance.ara_plug_in_extension = ext;
+                            logger_.log(
+                                "NOTE: BindToDocumentControllerWithRoles: "
+                                "succeeded");
                             OleUninitialize();
-                            promise.set_value(true);
+                            promise.set_value(1);
                         });
 
                     constexpr SIZE_T ara_stack_size = 32 * 1024 * 1024;
                     HANDLE thread_handle = CreateThread(
-                        nullptr, ara_stack_size,
+                        nullptr,
+                        ara_stack_size,
                         reinterpret_cast<LPTHREAD_START_ROUTINE>(
                             win32_thread_trampoline),
-                        new fu2::unique_function<void()>(std::move(create_fn)),
-                        0, nullptr);
-
-                    if (thread_handle) {
-                        WaitForSingleObject(thread_handle, INFINITE);
-                        CloseHandle(thread_handle);
-                    }
-
-                    if (!created_future.get()) {
+                        new fu2::unique_function<void()>(std::move(bind_fn)),
+                        0,
+                        nullptr);
+                    if (!thread_handle) {
                         return PrimitiveResponse<native_size_t>(0);
                     }
+
+                    WaitForSingleObject(thread_handle, INFINITE);
+                    CloseHandle(thread_handle);
+
+                    if (!bind_result_future.get()) {
+                        return PrimitiveResponse<native_size_t>(0);
+                    }
+
+                    return PrimitiveResponse<native_size_t>(1);
                 }
 
                 return do_mutual_recursion_on_gui_thread(
