@@ -655,7 +655,24 @@ void Vst3Bridge::run() {
                         return PrimitiveResponse<native_size_t>(0);
                     }
 
-                    WaitForSingleObject(thread_handle, INFINITE);
+                    // Pump Win32 messages while waiting so Melodyne's
+                    // internal message-based callbacks can complete.
+                    {
+                        DWORD wr;
+                        do {
+                            wr = MsgWaitForMultipleObjects(
+                                1, &thread_handle, FALSE, INFINITE,
+                                QS_ALLINPUT);
+                            if (wr == WAIT_OBJECT_0 + 1) {
+                                MSG msg;
+                                while (PeekMessageW(&msg, nullptr, 0, 0,
+                                                    PM_REMOVE)) {
+                                    TranslateMessage(&msg);
+                                    DispatchMessageW(&msg);
+                                }
+                            }
+                        } while (wr != WAIT_OBJECT_0 && wr != WAIT_FAILED);
+                    }
                     CloseHandle(thread_handle);
 
                     if (!bind_result_future.get()) {
@@ -901,7 +918,24 @@ void Vst3Bridge::run() {
                         return PrimitiveResponse<native_size_t>(0);
                     }
 
-                    WaitForSingleObject(thread_handle, INFINITE);
+                    // Pump Win32 messages while waiting so Melodyne's
+                    // internal message-based callbacks can complete.
+                    {
+                        DWORD wr;
+                        do {
+                            wr = MsgWaitForMultipleObjects(
+                                1, &thread_handle, FALSE, INFINITE,
+                                QS_ALLINPUT);
+                            if (wr == WAIT_OBJECT_0 + 1) {
+                                MSG msg;
+                                while (PeekMessageW(&msg, nullptr, 0, 0,
+                                                    PM_REMOVE)) {
+                                    TranslateMessage(&msg);
+                                    DispatchMessageW(&msg);
+                                }
+                            }
+                        } while (wr != WAIT_OBJECT_0 && wr != WAIT_FAILED);
+                    }
                     CloseHandle(thread_handle);
 
                     if (!bind_result_future.get()) {
