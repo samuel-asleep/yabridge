@@ -538,12 +538,67 @@ void Vst3Bridge::run() {
                             logger_.log(
                                 "NOTE: BindToDocumentController: calling "
                                 "createDocumentControllerWithDocument()");
+
+                            // Force-create a message queue on this thread so
+                            // Melodyne can post messages to itself during init.
+                            {
+                                MSG dummy;
+                                PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
+                            }
+
+                            // Spawn a nested thread to do the actual call so
+                            // this thread can pump messages while waiting.
+                            std::promise<const ARA::ARADocumentControllerInstance*>
+                                ctrl_promise;
+                            auto ctrl_future = ctrl_promise.get_future();
+
+                            auto inner_fn = fu2::unique_function<void()>(
+                                [&, p = std::move(ctrl_promise)]() mutable {
+                                    OleInitialize(nullptr);
+                                    const ARA::ARADocumentControllerInstance*
+                                        ctrl =
+                                            factory
+                                                ->createDocumentControllerWithDocument(
+                                                    instance
+                                                        .ara_document_controller_host_instance
+                                                        ->get(),
+                                                    &props);
+                                    OleUninitialize();
+                                    p.set_value(ctrl);
+                                });
+
+                            // 32MB stack for the inner thread too.
+                            constexpr SIZE_T inner_stack = 32 * 1024 * 1024;
+                            HANDLE inner_handle = CreateThread(
+                                nullptr, inner_stack,
+                                reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                                    win32_thread_trampoline),
+                                new fu2::unique_function<void()>(
+                                    std::move(inner_fn)),
+                                0, nullptr);
+
+                            if (inner_handle) {
+                                DWORD wr;
+                                do {
+                                    wr = MsgWaitForMultipleObjects(
+                                        1, &inner_handle, FALSE, INFINITE,
+                                        QS_ALLINPUT);
+                                    if (wr == WAIT_OBJECT_0 + 1) {
+                                        MSG msg;
+                                        while (PeekMessageW(&msg, nullptr, 0,
+                                                            0, PM_REMOVE)) {
+                                            TranslateMessage(&msg);
+                                            DispatchMessageW(&msg);
+                                        }
+                                    }
+                                } while (wr != WAIT_OBJECT_0 &&
+                                         wr != WAIT_FAILED);
+                                CloseHandle(inner_handle);
+                            }
+
                             const ARA::ARADocumentControllerInstance* ctrl =
-                                factory->createDocumentControllerWithDocument(
-                                    instance
-                                        .ara_document_controller_host_instance
-                                        ->get(),
-                                    &props);
+                                ctrl_future.get();
+
                             logger_.log(
                                 ctrl
                                     ? "NOTE: BindToDocumentController: "
@@ -721,12 +776,63 @@ void Vst3Bridge::run() {
                                 "NOTE: BindToDocumentControllerWithRoles: "
                                 "calling "
                                 "createDocumentControllerWithDocument()");
+
+                            // Force-create a message queue on this thread.
+                            {
+                                MSG dummy;
+                                PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
+                            }
+
+                            // Nested thread + message pump pattern.
+                            std::promise<const ARA::ARADocumentControllerInstance*>
+                                ctrl_promise;
+                            auto ctrl_future = ctrl_promise.get_future();
+
+                            auto inner_fn = fu2::unique_function<void()>(
+                                [&, p = std::move(ctrl_promise)]() mutable {
+                                    OleInitialize(nullptr);
+                                    const ARA::ARADocumentControllerInstance*
+                                        c = factory
+                                                ->createDocumentControllerWithDocument(
+                                                    instance
+                                                        .ara_document_controller_host_instance
+                                                        ->get(),
+                                                    &props);
+                                    OleUninitialize();
+                                    p.set_value(c);
+                                });
+
+                            constexpr SIZE_T inner_stack = 32 * 1024 * 1024;
+                            HANDLE inner_handle = CreateThread(
+                                nullptr, inner_stack,
+                                reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                                    win32_thread_trampoline),
+                                new fu2::unique_function<void()>(
+                                    std::move(inner_fn)),
+                                0, nullptr);
+
+                            if (inner_handle) {
+                                DWORD wr;
+                                do {
+                                    wr = MsgWaitForMultipleObjects(
+                                        1, &inner_handle, FALSE, INFINITE,
+                                        QS_ALLINPUT);
+                                    if (wr == WAIT_OBJECT_0 + 1) {
+                                        MSG msg;
+                                        while (PeekMessageW(&msg, nullptr, 0,
+                                                            0, PM_REMOVE)) {
+                                            TranslateMessage(&msg);
+                                            DispatchMessageW(&msg);
+                                        }
+                                    }
+                                } while (wr != WAIT_OBJECT_0 &&
+                                         wr != WAIT_FAILED);
+                                CloseHandle(inner_handle);
+                            }
+
                             const ARA::ARADocumentControllerInstance* ctrl =
-                                factory->createDocumentControllerWithDocument(
-                                    instance
-                                        .ara_document_controller_host_instance
-                                        ->get(),
-                                    &props);
+                                ctrl_future.get();
+
                             logger_.log(
                                 ctrl
                                     ? "NOTE: BindToDocumentControllerWithRoles: "
@@ -881,107 +987,77 @@ void Vst3Bridge::run() {
             },
             [&](const YaARAFactory::Initialize& request)
                 -> YaARAFactory::Initialize::Response {
-                return main_context_
-                    .run_in_context([&]() -> Ack {
-                        std::promise<void> init_promise;
-                        auto init_future = init_promise.get_future();
+                // Run initializeARAWithConfiguration on a dedicated thread
+                // with a large stack and COM STA. Do NOT use run_in_context()
+                // here — blocking the GUI thread with WaitForSingleObject
+                // prevents Win32 message pumping and causes a deadlock.
+                std::promise<void> init_promise;
+                auto init_future = init_promise.get_future();
 
-                        auto init_fn = fu2::unique_function<void()>(
-                            [&, p = std::move(init_promise)]() mutable {
-                                OleInitialize(nullptr);
-                                const auto& [instance, _] =
-                                    get_instance(request.instance_id);
-                                Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                                    entry_point(instance.object);
-                                if (!entry_point) {
-                                    OleUninitialize();
-                                    p.set_value();
-                                    return;
-                                }
-
-                                const ARA::ARAFactory* factory =
-                                    entry_point->getFactory();
-                                if (!factory ||
-                                    !factory->initializeARAWithConfiguration) {
-                                    OleUninitialize();
-                                    p.set_value();
-                                    return;
-                                }
-
+                auto init_fn = fu2::unique_function<void()>(
+                    [&, p = std::move(init_promise)]() mutable {
+                        OleInitialize(nullptr);
+                        const auto& [instance, _] =
+                            get_instance(request.instance_id);
+                        Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
+                            entry_point(instance.object);
+                        if (entry_point) {
+                            const ARA::ARAFactory* factory =
+                                entry_point->getFactory();
+                            if (factory &&
+                                factory->initializeARAWithConfiguration) {
                                 if (!request.config.has_config) {
                                     factory->initializeARAWithConfiguration(
                                         nullptr);
-                                    OleUninitialize();
-                                    p.set_value();
-                                    return;
-                                }
-
-                                ARA::ARAInterfaceConfiguration config{};
-                                config.structSize =
-                                    request.config.struct_size
-                                        ? static_cast<ARA::ARASize>(
-                                              request.config.struct_size)
-                                        : static_cast<ARA::ARASize>(
-                                              ARA::kARAInterfaceConfigurationMinSize);
-                                config.desiredApiGeneration =
-                                    request.config.desired_api_generation;
-                                config.assertFunctionAddress = nullptr;
-                                factory->initializeARAWithConfiguration(
-                                    &config);
-
-                                OleUninitialize();
-                                p.set_value();
-                            });
-
-                        constexpr SIZE_T ara_stack_size = 32 * 1024 * 1024;
-                        HANDLE init_handle = CreateThread(
-                            nullptr,
-                            ara_stack_size,
-                            reinterpret_cast<LPTHREAD_START_ROUTINE>(
-                                win32_thread_trampoline),
-                            new fu2::unique_function<void()>(std::move(init_fn)),
-                            0,
-                            nullptr);
-                        if (init_handle) {
-                            WaitForSingleObject(init_handle, INFINITE);
-                            CloseHandle(init_handle);
-                            init_future.get();
-                        } else {
-                            const auto& [instance, _] =
-                                get_instance(request.instance_id);
-                            Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                                entry_point(instance.object);
-                            if (entry_point) {
-                                const ARA::ARAFactory* factory =
-                                    entry_point->getFactory();
-                                if (factory &&
-                                    factory->initializeARAWithConfiguration) {
-                                    if (!request.config.has_config) {
-                                        factory
-                                            ->initializeARAWithConfiguration(
-                                                nullptr);
-                                    } else {
-                                        ARA::ARAInterfaceConfiguration config{};
-                                        config.structSize =
-                                            request.config.struct_size
-                                                ? static_cast<ARA::ARASize>(
-                                                      request.config.struct_size)
-                                                : static_cast<ARA::ARASize>(
-                                                      ARA::kARAInterfaceConfigurationMinSize);
-                                        config.desiredApiGeneration =
-                                            request.config
-                                                .desired_api_generation;
-                                        config.assertFunctionAddress = nullptr;
-                                        factory->initializeARAWithConfiguration(
-                                            &config);
-                                    }
+                                } else {
+                                    ARA::ARAInterfaceConfiguration config{};
+                                    config.structSize =
+                                        request.config.struct_size
+                                            ? static_cast<ARA::ARASize>(
+                                                  request.config.struct_size)
+                                            : static_cast<ARA::ARASize>(
+                                                  ARA::kARAInterfaceConfigurationMinSize);
+                                    config.desiredApiGeneration =
+                                        request.config.desired_api_generation;
+                                    config.assertFunctionAddress = nullptr;
+                                    factory->initializeARAWithConfiguration(
+                                        &config);
                                 }
                             }
                         }
+                        OleUninitialize();
+                        p.set_value();
+                    });
 
-                        return Ack{};
-                    })
-                    .get();
+                constexpr SIZE_T ara_stack_size = 32 * 1024 * 1024;
+                HANDLE init_handle = CreateThread(
+                    nullptr, ara_stack_size,
+                    reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                        win32_thread_trampoline),
+                    new fu2::unique_function<void()>(std::move(init_fn)),
+                    0, nullptr);
+
+                if (init_handle) {
+                    // Pump Win32 messages while waiting so the GUI thread
+                    // stays responsive.
+                    DWORD wr;
+                    do {
+                        wr = MsgWaitForMultipleObjects(
+                            1, &init_handle, FALSE, INFINITE, QS_ALLINPUT);
+                        if (wr == WAIT_OBJECT_0 + 1) {
+                            MSG msg;
+                            while (PeekMessageW(&msg, nullptr, 0, 0,
+                                                PM_REMOVE)) {
+                                TranslateMessage(&msg);
+                                DispatchMessageW(&msg);
+                            }
+                        }
+                    } while (wr != WAIT_OBJECT_0 && wr != WAIT_FAILED);
+                    CloseHandle(init_handle);
+                    init_future.get();
+                }
+
+                return Ack{};
             },
             [&](const YaARAFactory::Uninitialize& request)
                 -> YaARAFactory::Uninitialize::Response {
