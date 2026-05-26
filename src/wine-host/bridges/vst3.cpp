@@ -87,6 +87,14 @@ ara_create_audio_reader(ARA::ARAAudioAccessControllerHostRef ref,
                         ARA::ARAAudioSourceHostRef source_ref,
                         ARA::ARABool use_64bit) {
     auto* proxy = proxy_from_audio_ref(ref);
+    if (!proxy->allow_ipc_callbacks_) {
+        proxy->bridge_->logger_.log(
+            "NOTE: WineARADocumentControllerHostInstance: "
+            "createAudioReaderForSource() called during bind-time init — "
+            "returning dummy reader");
+        return reinterpret_cast<ARA::ARAAudioReaderHostRef>(
+            static_cast<uintptr_t>(1));
+    }
     proxy->bridge_->logger_.log(
         "NOTE: WineARADocumentControllerHostInstance: "
         "createAudioReaderForSource() called — forwarding via IPC");
@@ -135,6 +143,12 @@ static void ARA_CALL
 ara_destroy_audio_reader(ARA::ARAAudioAccessControllerHostRef ref,
                          ARA::ARAAudioReaderHostRef reader_ref) {
     auto* proxy = proxy_from_audio_ref(ref);
+    if (!proxy->allow_ipc_callbacks_) {
+        proxy->bridge_->logger_.log(
+            "NOTE: WineARADocumentControllerHostInstance: "
+            "destroyAudioReader() called during bind-time init — no-op");
+        return;
+    }
     proxy->bridge_->logger_.log(
         "NOTE: WineARADocumentControllerHostInstance: "
         "destroyAudioReader() called — forwarding via IPC");
@@ -219,6 +233,9 @@ WineARADocumentControllerHostInstance::WineARADocumentControllerHostInstance(
             linux_host_instance->audioAccessControllerHostRef);
         archiving_controller_host_ref_ = reinterpret_cast<native_size_t>(
             linux_host_instance->archivingControllerHostRef);
+        allow_ipc_callbacks_ = true;
+    } else {
+        allow_ipc_callbacks_ = false;
     }
 
     // Populate the audio access interface table.
@@ -866,35 +883,101 @@ void Vst3Bridge::run() {
                 -> YaARAFactory::Initialize::Response {
                 return main_context_
                     .run_in_context([&]() -> Ack {
-                        const auto& [instance, _] =
-                            get_instance(request.instance_id);
-                        Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                            entry_point(instance.object);
-                        if (!entry_point) {
-                            return Ack{};
-                        }
+                        std::promise<void> init_promise;
+                        auto init_future = init_promise.get_future();
 
-                        const ARA::ARAFactory* factory =
-                            entry_point->getFactory();
-                        if (!factory ||
-                            !factory->initializeARAWithConfiguration) {
-                            return Ack{};
-                        }
+                        auto init_fn = fu2::unique_function<void()>(
+                            [&, p = std::move(init_promise)]() mutable {
+                                OleInitialize(nullptr);
+                                const auto& [instance, _] =
+                                    get_instance(request.instance_id);
+                                Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
+                                    entry_point(instance.object);
+                                if (!entry_point) {
+                                    OleUninitialize();
+                                    p.set_value();
+                                    return;
+                                }
 
-                        if (!request.config.has_config) {
-                            factory->initializeARAWithConfiguration(nullptr);
-                            return Ack{};
-                        }
+                                const ARA::ARAFactory* factory =
+                                    entry_point->getFactory();
+                                if (!factory ||
+                                    !factory->initializeARAWithConfiguration) {
+                                    OleUninitialize();
+                                    p.set_value();
+                                    return;
+                                }
 
-                        ARA::ARAInterfaceConfiguration config{};
-                        config.structSize =
-                            request.config.struct_size
-                                ? static_cast<ARA::ARASize>(request.config.struct_size)
-                                : static_cast<ARA::ARASize>(ARA::kARAInterfaceConfigurationMinSize);
-                        config.desiredApiGeneration =
-                            request.config.desired_api_generation;
-                        config.assertFunctionAddress = nullptr;
-                        factory->initializeARAWithConfiguration(&config);
+                                if (!request.config.has_config) {
+                                    factory->initializeARAWithConfiguration(
+                                        nullptr);
+                                    OleUninitialize();
+                                    p.set_value();
+                                    return;
+                                }
+
+                                ARA::ARAInterfaceConfiguration config{};
+                                config.structSize =
+                                    request.config.struct_size
+                                        ? static_cast<ARA::ARASize>(
+                                              request.config.struct_size)
+                                        : static_cast<ARA::ARASize>(
+                                              ARA::kARAInterfaceConfigurationMinSize);
+                                config.desiredApiGeneration =
+                                    request.config.desired_api_generation;
+                                config.assertFunctionAddress = nullptr;
+                                factory->initializeARAWithConfiguration(
+                                    &config);
+
+                                OleUninitialize();
+                                p.set_value();
+                            });
+
+                        constexpr SIZE_T ara_stack_size = 32 * 1024 * 1024;
+                        HANDLE init_handle = CreateThread(
+                            nullptr,
+                            ara_stack_size,
+                            reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                                win32_thread_trampoline),
+                            new fu2::unique_function<void()>(std::move(init_fn)),
+                            0,
+                            nullptr);
+                        if (init_handle) {
+                            WaitForSingleObject(init_handle, INFINITE);
+                            CloseHandle(init_handle);
+                            init_future.get();
+                        } else {
+                            const auto& [instance, _] =
+                                get_instance(request.instance_id);
+                            Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
+                                entry_point(instance.object);
+                            if (entry_point) {
+                                const ARA::ARAFactory* factory =
+                                    entry_point->getFactory();
+                                if (factory &&
+                                    factory->initializeARAWithConfiguration) {
+                                    if (!request.config.has_config) {
+                                        factory
+                                            ->initializeARAWithConfiguration(
+                                                nullptr);
+                                    } else {
+                                        ARA::ARAInterfaceConfiguration config{};
+                                        config.structSize =
+                                            request.config.struct_size
+                                                ? static_cast<ARA::ARASize>(
+                                                      request.config.struct_size)
+                                                : static_cast<ARA::ARASize>(
+                                                      ARA::kARAInterfaceConfigurationMinSize);
+                                        config.desiredApiGeneration =
+                                            request.config
+                                                .desired_api_generation;
+                                        config.assertFunctionAddress = nullptr;
+                                        factory->initializeARAWithConfiguration(
+                                            &config);
+                                    }
+                                }
+                            }
+                        }
 
                         return Ack{};
                     })

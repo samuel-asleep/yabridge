@@ -171,6 +171,7 @@ struct WineARADocumentControllerHostInstance {
     // Back-reference used by the static stub functions to reach the bridge.
     size_t instance_id_ = 0;
     Vst3Bridge* bridge_ = nullptr;
+    bool allow_ipc_callbacks_ = false;
 };
 
 /**
