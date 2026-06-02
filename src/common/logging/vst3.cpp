@@ -809,6 +809,15 @@ bool Vst3Logger::log_request(
     });
 }
 
+void Vst3Logger::log_response(
+    bool is_host_plugin,
+    const YaARAHostCallbacks::ReadBytesFromArchive::Response& response) {
+    log_response_base(is_host_plugin, [&](auto& message) {
+        message << (response.ok != ARA::kARAFalse ? "true" : "false")
+                << " (" << response.buffer.size() << " bytes)";
+    });
+}
+
 bool Vst3Logger::log_request(
     bool is_host_plugin,
     const YaARAHostCallbacks::WriteBytesToArchive& request) {

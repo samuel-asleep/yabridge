@@ -19,6 +19,7 @@
 #include <bitset>
 #include <cstring>
 #include <future>
+#include <memory>
 
 #include "vst3-impls/component-handler-proxy.h"
 #include "vst3-impls/connection-point-proxy.h"
@@ -91,7 +92,7 @@ ara_create_audio_reader(ARA::ARAAudioAccessControllerHostRef ref,
         "NOTE: WineARADocumentControllerHostInstance: "
         "createAudioReaderForSource() called — forwarding via IPC");
     const native_size_t result =
-        proxy->bridge_->send_message(YaARAHostCallbacks::CreateAudioReaderForSource{
+        proxy->bridge_->send_mutually_recursive_message(YaARAHostCallbacks::CreateAudioReaderForSource{
             .instance_id = proxy->instance_id_,
             .audio_access_controller_host_ref =
                 proxy->audio_access_controller_host_ref_,
@@ -102,13 +103,23 @@ ara_create_audio_reader(ARA::ARAAudioAccessControllerHostRef ref,
     proxy->bridge_->logger_.log(
         "NOTE: WineARADocumentControllerHostInstance: "
         "createAudioReaderForSource() returned " + std::to_string(result));
+    // Return the host-provided reader ref as-is. If the host returned 0
+    // (failure), propagate that to the plugin so it can handle the error
+    // rather than receiving a fabricated non-null handle.
+    if (result) {
+        // Track the sample byte size so ara_read_audio_samples() can zero the
+        // correct number of bytes per sample without zeroing half the buffer
+        // for 64-bit readers.
+        proxy->reader_sample_byte_size_[result] =
+            use_64bit ? sizeof(double) : sizeof(float);
+    }
     return reinterpret_cast<ARA::ARAAudioReaderHostRef>(
-        static_cast<uintptr_t>(result ? result : 1));
+        static_cast<uintptr_t>(result));
 }
 
 static ARA::ARABool ARA_CALL
 ara_read_audio_samples(ARA::ARAAudioAccessControllerHostRef ref,
-                       ARA::ARAAudioReaderHostRef /*reader_ref*/,
+                       ARA::ARAAudioReaderHostRef reader_ref,
                        ARA::ARASamplePosition /*sample_pos*/,
                        ARA::ARASampleCount samples_per_channel,
                        void* const buffers[]) {
@@ -118,14 +129,21 @@ ara_read_audio_samples(ARA::ARAAudioAccessControllerHostRef ref,
         "readAudioSamples() called — returning silence (kARATrue)");
     // Zero the output buffers so Melodyne gets valid (silent) audio data
     // and doesn't abort createDocumentControllerWithDocument().
-    // We don't know the channel count here, but Melodyne typically uses
-    // stereo (2 channels). Zero up to 8 channels defensively.
+    // Look up the sample byte size for this reader (4 for float, 8 for double).
+    // Fall back to sizeof(float) if the reader was not registered (should not
+    // happen, but be defensive).
+    const native_size_t reader_key =
+        reinterpret_cast<native_size_t>(reader_ref);
+    const auto it = proxy->reader_sample_byte_size_.find(reader_key);
+    const size_t sample_byte_size =
+        (it != proxy->reader_sample_byte_size_.end()) ? it->second
+                                                      : sizeof(float);
     if (buffers && samples_per_channel > 0) {
         for (int ch = 0; ch < 8; ++ch) {
             if (!buffers[ch]) break;
             std::memset(buffers[ch], 0,
                         static_cast<size_t>(samples_per_channel) *
-                            sizeof(float));
+                            sample_byte_size);
         }
     }
     return ARA::kARATrue;
@@ -138,7 +156,10 @@ ara_destroy_audio_reader(ARA::ARAAudioAccessControllerHostRef ref,
     proxy->bridge_->logger_.log(
         "NOTE: WineARADocumentControllerHostInstance: "
         "destroyAudioReader() called — forwarding via IPC");
-    proxy->bridge_->send_message(YaARAHostCallbacks::DestroyAudioReader{
+    // Remove the per-reader sample-width entry.
+    proxy->reader_sample_byte_size_.erase(
+        reinterpret_cast<native_size_t>(reader_ref));
+    proxy->bridge_->send_mutually_recursive_message(YaARAHostCallbacks::DestroyAudioReader{
         .instance_id = proxy->instance_id_,
         .audio_access_controller_host_ref =
             proxy->audio_access_controller_host_ref_,
@@ -214,6 +235,9 @@ WineARADocumentControllerHostInstance::WineARADocumentControllerHostInstance(
       bridge_(&bridge),
       carla_document_controller_ref_(carla_document_controller_ref) {
     // Capture the Linux-side host refs as opaque integers.
+    // NOTE: linux_host_instance is only valid in the BindToDocumentController
+    // path where the Linux-side pointer is in the same process (not used in
+    // the CreateDocumentController path — see the other constructor overload).
     if (linux_host_instance) {
         audio_access_controller_host_ref_ = reinterpret_cast<native_size_t>(
             linux_host_instance->audioAccessControllerHostRef);
@@ -221,6 +245,25 @@ WineARADocumentControllerHostInstance::WineARADocumentControllerHostInstance(
             linux_host_instance->archivingControllerHostRef);
     }
 
+    populate_tables();
+}
+
+WineARADocumentControllerHostInstance::WineARADocumentControllerHostInstance(
+    native_size_t audio_access_host_ref,
+    native_size_t archiving_host_ref,
+    size_t instance_id,
+    Vst3Bridge& bridge) noexcept
+    : instance_id_(instance_id),
+      bridge_(&bridge),
+      carla_document_controller_ref_(0) {
+    // Use the pre-serialized host refs directly — no pointer dereference needed.
+    audio_access_controller_host_ref_ = audio_access_host_ref;
+    archiving_controller_host_ref_ = archiving_host_ref;
+
+    populate_tables();
+}
+
+void WineARADocumentControllerHostInstance::populate_tables() noexcept {
     // Populate the audio access interface table.
     // We use `this` as the Wine-side host ref so the static stubs can recover
     // the proxy pointer without any global state.
@@ -531,12 +574,12 @@ void Vst3Bridge::run() {
                                              PM_NOREMOVE);
                             }
 
-                            std::promise<const ARA::ARADocumentControllerInstance*>
-                                ctrl_promise;
-                            auto ctrl_future = ctrl_promise.get_future();
+                            auto ctrl_promise = std::make_shared<
+                                std::promise<const ARA::ARADocumentControllerInstance*>>();
+                            auto ctrl_future = ctrl_promise->get_future();
 
                             auto inner_fn = fu2::unique_function<void()>(
-                                [&, p = std::move(ctrl_promise)]() mutable {
+                                [&, p = ctrl_promise]() mutable {
                                     // Initialize COM as STA on this thread so
                                     // Melodyne's internal COM calls work.
                                     OleInitialize(nullptr);
@@ -559,17 +602,19 @@ void Vst3Bridge::run() {
                                             : "WARNING: BindToDocumentController: "
                                               "createDocumentControllerWithDocument() returned null");
                                     OleUninitialize();
-                                    p.set_value(ctrl);
+                                    p->set_value(ctrl);
                                 });
 
                             // 32MB stack — same as outer thread, Melodyne needs it.
                             constexpr SIZE_T inner_stack = 32 * 1024 * 1024;
+                            // Pre-allocate so we can delete on CreateThread failure.
+                            auto* inner_fn_ptr =
+                                new fu2::unique_function<void()>(std::move(inner_fn));
                             HANDLE inner_handle = CreateThread(
                                 nullptr, inner_stack,
                                 reinterpret_cast<LPTHREAD_START_ROUTINE>(
                                     win32_thread_trampoline),
-                                new fu2::unique_function<void()>(
-                                    std::move(inner_fn)),
+                                inner_fn_ptr,
                                 0, nullptr);
 
                             if (inner_handle) {
@@ -589,6 +634,14 @@ void Vst3Bridge::run() {
                                 } while (wr != WAIT_OBJECT_0 &&
                                          wr != WAIT_FAILED);
                                 CloseHandle(inner_handle);
+                            } else {
+                                // CreateThread failed — delete the function
+                                // function object; set nullptr on promise explicitly.
+                                logger_.log(
+                                    "WARNING: BindToDocumentController: "
+                                    "inner CreateThread failed");
+                                ctrl_promise->set_value(nullptr);
+                                delete inner_fn_ptr;
                             }
 
                             const ARA::ARADocumentControllerInstance* ctrl =
@@ -608,16 +661,31 @@ void Vst3Bridge::run() {
                         });
 
                     constexpr SIZE_T ara_stack_size = 32 * 1024 * 1024;
+                    // Pre-allocate the thread function so we can reclaim
+                    // ownership (and fulfill the promise) if CreateThread fails.
+                    auto* create_fn_ptr =
+                        new fu2::unique_function<void()>(std::move(create_fn));
                     HANDLE thread_handle = CreateThread(
                         nullptr, ara_stack_size,
                         reinterpret_cast<LPTHREAD_START_ROUTINE>(
                             win32_thread_trampoline),
-                        new fu2::unique_function<void()>(std::move(create_fn)),
+                        create_fn_ptr,
                         0, nullptr);
 
                     if (thread_handle) {
                         WaitForSingleObject(thread_handle, INFINITE);
                         CloseHandle(thread_handle);
+                    } else {
+                        // CreateThread failed — reclaim and destroy the
+                        // function object so the captured promise is
+                        // fulfilled (via its destructor setting the broken
+                        // promise exception) rather than leaving
+                        // created_future.get() blocked forever.
+                        logger_.log(
+                            "WARNING: BindToDocumentController: "
+                            "outer CreateThread failed");
+                        delete create_fn_ptr;
+                        created_promise.set_value(false);
                     }
 
                     if (!created_future.get()) {
@@ -729,12 +797,12 @@ void Vst3Bridge::run() {
                                              PM_NOREMOVE);
                             }
 
-                            std::promise<const ARA::ARADocumentControllerInstance*>
-                                ctrl_promise;
-                            auto ctrl_future = ctrl_promise.get_future();
+                            auto ctrl_promise = std::make_shared<
+                                std::promise<const ARA::ARADocumentControllerInstance*>>();
+                            auto ctrl_future = ctrl_promise->get_future();
 
                             auto inner_fn = fu2::unique_function<void()>(
-                                [&, p = std::move(ctrl_promise)]() mutable {
+                                [&, p = ctrl_promise]() mutable {
                                     OleInitialize(nullptr);
                                     const ARA::ARADocumentControllerInstance*
                                         ctrl =
@@ -745,17 +813,19 @@ void Vst3Bridge::run() {
                                                         ->get(),
                                                     &props);
                                     OleUninitialize();
-                                    p.set_value(ctrl);
+                                    p->set_value(ctrl);
                                 });
 
                             // 32MB stack — same as outer thread, Melodyne needs it.
                             constexpr SIZE_T inner_stack = 32 * 1024 * 1024;
+                            // Pre-allocate so we can delete on CreateThread failure.
+                            auto* inner_fn_ptr =
+                                new fu2::unique_function<void()>(std::move(inner_fn));
                             HANDLE inner_handle = CreateThread(
                                 nullptr, inner_stack,
                                 reinterpret_cast<LPTHREAD_START_ROUTINE>(
                                     win32_thread_trampoline),
-                                new fu2::unique_function<void()>(
-                                    std::move(inner_fn)),
+                                inner_fn_ptr,
                                 0, nullptr);
 
                             if (inner_handle) {
@@ -775,6 +845,14 @@ void Vst3Bridge::run() {
                                 } while (wr != WAIT_OBJECT_0 &&
                                          wr != WAIT_FAILED);
                                 CloseHandle(inner_handle);
+                            } else {
+                                // CreateThread failed — delete the function
+                                // function object; set nullptr on promise explicitly.
+                                logger_.log(
+                                    "WARNING: BindToDocumentControllerWithRoles: "
+                                    "inner CreateThread failed");
+                                ctrl_promise->set_value(nullptr);
+                                delete inner_fn_ptr;
                             }
 
                             const ARA::ARADocumentControllerInstance* ctrl =
@@ -794,16 +872,30 @@ void Vst3Bridge::run() {
                         });
 
                     constexpr SIZE_T ara_stack_size = 32 * 1024 * 1024;
+                    // Pre-allocate the thread function so we can reclaim
+                    // ownership (and fulfill the promise) if CreateThread fails.
+                    auto* create_fn_ptr =
+                        new fu2::unique_function<void()>(std::move(create_fn));
                     HANDLE thread_handle = CreateThread(
                         nullptr, ara_stack_size,
                         reinterpret_cast<LPTHREAD_START_ROUTINE>(
                             win32_thread_trampoline),
-                        new fu2::unique_function<void()>(std::move(create_fn)),
+                        create_fn_ptr,
                         0, nullptr);
 
                     if (thread_handle) {
                         WaitForSingleObject(thread_handle, INFINITE);
                         CloseHandle(thread_handle);
+                    } else {
+                        // CreateThread failed — reclaim and destroy the
+                        // function object so the captured promise is
+                        // fulfilled rather than leaving
+                        // created_future.get() blocked forever.
+                        logger_.log(
+                            "WARNING: BindToDocumentControllerWithRoles: "
+                            "outer CreateThread failed");
+                        delete create_fn_ptr;
+                        created_promise.set_value(false);
                     }
 
                     if (!created_future.get()) {
@@ -1012,7 +1104,9 @@ void Vst3Bridge::run() {
                             const ARA::ARAInterfaceConfiguration* config_ptr;
                             LPVOID caller_fiber = nullptr;
                             bool done = false;
+                            Vst3Logger* logger = nullptr;
                         } ctx{ factory, config_ptr };
+                        ctx.logger = &logger_;
                         // Convert the current thread to a fiber.
                         // If ConvertThreadToFiber fails the thread is already
                         // a fiber — retrieve the existing handle.
@@ -1029,41 +1123,59 @@ void Vst3Bridge::run() {
                         struct FiberFn {
                             static void WINAPI run(LPVOID param) {
                                 auto* c = static_cast<FiberCtx*>(param);
-                                // Log config pointer validity inside the fiber
-                                // before calling Melodyne — this confirms the
-                                // pointer is still valid on the fiber's stack.
-                                char buf[256];
-                                snprintf(buf, sizeof(buf),
-                                    "DEBUG: ARA fiber: config_ptr=0x%016llx"
-                                    " factory=0x%016llx",
-                                    (unsigned long long)reinterpret_cast<uintptr_t>(c->config_ptr),
-                                    (unsigned long long)reinterpret_cast<uintptr_t>(c->factory));
-                                // Write directly to stderr since logger_ is
-                                // not accessible from a static function.
-                                fprintf(stderr, "%s\n", buf);
-                                fflush(stderr);
-                                if (c->config_ptr) {
-                                    snprintf(buf, sizeof(buf),
-                                        "DEBUG: ARA fiber: config contents: "
-                                        "structSize=%llu desiredApiGen=%d "
-                                        "assertFnAddr=0x%016llx",
-                                        (unsigned long long)c->config_ptr->structSize,
-                                        (int)c->config_ptr->desiredApiGeneration,
-                                        (unsigned long long)reinterpret_cast<uintptr_t>(
-                                            c->config_ptr->assertFunctionAddress));
-                                    fprintf(stderr, "%s\n", buf);
-                                    fflush(stderr);
+                                if (c->logger) {
+                                    c->logger->log(
+                                        "DEBUG: ARA fiber: config_ptr=" +
+                                        [](uintptr_t v) {
+                                            char buf[32];
+                                            snprintf(buf, sizeof(buf),
+                                                     "0x%016llx",
+                                                     (unsigned long long)v);
+                                            return std::string(buf);
+                                        }(reinterpret_cast<uintptr_t>(
+                                            c->config_ptr)) +
+                                        " factory=" +
+                                        [](uintptr_t v) {
+                                            char buf[32];
+                                            snprintf(buf, sizeof(buf),
+                                                     "0x%016llx",
+                                                     (unsigned long long)v);
+                                            return std::string(buf);
+                                        }(reinterpret_cast<uintptr_t>(
+                                            c->factory)));
+                                    if (c->config_ptr) {
+                                        c->logger->log(
+                                            "DEBUG: ARA fiber: config "
+                                            "contents: structSize=" +
+                                            std::to_string(
+                                                c->config_ptr->structSize) +
+                                            " desiredApiGen=" +
+                                            std::to_string(static_cast<int>(
+                                                c->config_ptr
+                                                    ->desiredApiGeneration)) +
+                                            " assertFnAddr=" +
+                                            [](uintptr_t v) {
+                                                char buf[32];
+                                                snprintf(buf, sizeof(buf),
+                                                         "0x%016llx",
+                                                         (unsigned long long)v);
+                                                return std::string(buf);
+                                            }(reinterpret_cast<uintptr_t>(
+                                                c->config_ptr
+                                                    ->assertFunctionAddress)));
+                                    }
+                                    c->logger->log(
+                                        "DEBUG: ARA fiber: calling "
+                                        "initializeARAWithConfiguration now");
                                 }
-                                fprintf(stderr,
-                                    "DEBUG: ARA fiber: calling "
-                                    "initializeARAWithConfiguration now\n");
-                                fflush(stderr);
                                 c->factory->initializeARAWithConfiguration(
                                     c->config_ptr);
-                                fprintf(stderr,
-                                    "DEBUG: ARA fiber: "
-                                    "initializeARAWithConfiguration returned\n");
-                                fflush(stderr);
+                                if (c->logger) {
+                                    c->logger->log(
+                                        "DEBUG: ARA fiber: "
+                                        "initializeARAWithConfiguration "
+                                        "returned");
+                                }
                                 c->done = true;
                                 // Switch back to the caller fiber.
                                 if (c->caller_fiber) {
@@ -1139,161 +1251,158 @@ void Vst3Bridge::run() {
             },
             [&](const YaARAFactory::CreateDocumentController& request)
                 -> YaARAFactory::CreateDocumentController::Response {
-                // createDocumentControllerWithDocument() needs:
-                //   1. GUI thread (for Win32 message pumping — Melodyne posts
-                //      messages to windows it created on the GUI thread)
-                //   2. A large stack (32MB fiber — CreateThread overflows
-                //      because Wine only commits 4KB initially)
-                // Same pattern as initializeARAWithConfiguration.
-                std::promise<native_size_t> result_promise;
-                auto result_future = result_promise.get_future();
+                // createDocumentControllerWithDocument() must run on the GUI
+                // thread (Melodyne posts Win32 messages to windows created on
+                // that thread). We also need a large stack and a running
+                // message pump while it executes.
+                //
+                // Strategy: run the call on a dedicated CreateThread (32 MB
+                // stack) and pump messages on the GUI thread with
+                // MsgWaitForMultipleObjects, the same pattern used by the
+                // BindToDocumentController handler.
+                auto result_promise = std::make_shared<std::promise<native_size_t>>();
+                auto result_future = result_promise->get_future();
 
-                main_context_.run_in_context([&]() -> void {
-                    const auto& [instance, _] =
-                        get_instance(request.instance_id);
+                auto create_fn = fu2::unique_function<void()>(
+                    [&, promise = result_promise]() mutable {
+                        OleInitialize(nullptr);
 
-                    Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                        entry_point(instance.object);
-                    if (!entry_point) {
-                        logger_.log(
-                            "WARNING: CreateDocumentController: instance "
-                            "does not support ARA::IPlugInEntryPoint");
-                        result_promise.set_value(0);
-                        return;
-                    }
+                        const auto& [instance, _] =
+                            get_instance(request.instance_id);
 
-                    const ARA::ARAFactory* factory =
-                        entry_point->getFactory();
-                    if (!factory ||
-                        !factory->createDocumentControllerWithDocument) {
-                        logger_.log(
-                            "WARNING: CreateDocumentController: factory "
-                            "has no createDocumentControllerWithDocument");
-                        result_promise.set_value(0);
-                        return;
-                    }
-
-                    const auto* linux_host_instance =
-                        reinterpret_cast<
-                            const ARA::ARADocumentControllerHostInstance*>(
-                            static_cast<uintptr_t>(
-                                request.host_instance_ptr));
-
-                    instance.ara_document_controller_host_instance =
-                        std::make_unique<
-                            WineARADocumentControllerHostInstance>(
-                            linux_host_instance,
-                            request.instance_id,
-                            *this);
-
-                    ARA::ARADocumentProperties props{};
-                    props.structSize = static_cast<ARA::ARASize>(
-                        ARA_IMPLEMENTED_STRUCT_SIZE(ARADocumentProperties,
-                                                    name));
-                    const char* name_cstr =
-                        request.document_name.empty()
-                            ? nullptr
-                            : request.document_name.c_str();
-                    props.name = name_cstr;
-
-                    // Force-create a message queue on this (GUI) thread.
-                    {
-                        MSG dummy;
-                        PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
-                    }
-
-                    // Debug log
-                    {
-                        const ARA::ARADocumentControllerHostInstance* hi =
-                            instance.ara_document_controller_host_instance->get();
-                        char dbg_buf[256];
-                        snprintf(dbg_buf, sizeof(dbg_buf),
-                            "DEBUG: createDocumentControllerWithDocument: "
-                            "host_instance=0x%016llx structSize=%llu "
-                            "audioAccessIface=0x%016llx archivingIface=0x%016llx",
-                            (unsigned long long)reinterpret_cast<uintptr_t>(hi),
-                            hi ? (unsigned long long)hi->structSize : 0ULL,
-                            hi ? (unsigned long long)reinterpret_cast<uintptr_t>(hi->audioAccessControllerInterface) : 0ULL,
-                            hi ? (unsigned long long)reinterpret_cast<uintptr_t>(hi->archivingControllerInterface) : 0ULL);
-                        fprintf(stderr, "%s\n", dbg_buf);
-                        fflush(stderr);
-                    }
-
-                    struct CtrlFiberCtx {
-                        const ARA::ARAFactory* factory;
-                        const ARA::ARADocumentControllerHostInstance* hi;
-                        const ARA::ARADocumentProperties* props;
-                        LPVOID caller_fiber = nullptr;
-                        const ARA::ARADocumentControllerInstance* result = nullptr;
-                    } ctrl_ctx{
-                        factory,
-                        instance.ara_document_controller_host_instance->get(),
-                        &props
-                    };
-
-                    struct CtrlFiberFn {
-                        static void WINAPI run(LPVOID param) {
-                            auto* c = static_cast<CtrlFiberCtx*>(param);
-                            fprintf(stderr,
-                                "DEBUG: createDocumentControllerWithDocument fiber: calling\n");
-                            fflush(stderr);
-                            c->result =
-                                c->factory->createDocumentControllerWithDocument(
-                                    c->hi, c->props);
-                            fprintf(stderr,
-                                "DEBUG: createDocumentControllerWithDocument fiber: returned 0x%016llx\n",
-                                (unsigned long long)reinterpret_cast<uintptr_t>(c->result));
-                            fflush(stderr);
-                            if (c->caller_fiber) {
-                                SwitchToFiber(c->caller_fiber);
-                            }
+                        Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
+                            entry_point(instance.object);
+                        if (!entry_point) {
+                            logger_.log(
+                                "WARNING: CreateDocumentController: instance "
+                                "does not support ARA::IPlugInEntryPoint");
+                            OleUninitialize();
+                            promise->set_value(0);
+                            return;
                         }
-                    };
 
-                    LPVOID caller_fiber = ConvertThreadToFiber(nullptr);
-                    bool was_already_fiber = false;
-                    if (!caller_fiber) {
-                        caller_fiber = GetCurrentFiber();
-                        was_already_fiber = true;
-                    }
-                    ctrl_ctx.caller_fiber = caller_fiber;
+                        const ARA::ARAFactory* factory =
+                            entry_point->getFactory();
+                        if (!factory ||
+                            !factory->createDocumentControllerWithDocument) {
+                            logger_.log(
+                                "WARNING: CreateDocumentController: factory "
+                                "has no createDocumentControllerWithDocument");
+                            OleUninitialize();
+                            promise->set_value(0);
+                            return;
+                        }
 
-                    constexpr SIZE_T ctrl_fiber_stack = 32 * 1024 * 1024;
-                    LPVOID worker_fiber = CreateFiber(
-                        ctrl_fiber_stack, CtrlFiberFn::run, &ctrl_ctx);
+                        // Construct the Wine-side proxy from the serialized
+                        // host refs rather than from the raw Linux-side
+                        // pointer. The Linux-side pointer is invalid inside
+                        // the Wine process and must never be dereferenced here.
+                        instance.ara_document_controller_host_instance =
+                            std::make_unique<
+                                WineARADocumentControllerHostInstance>(
+                                request.audio_access_controller_host_ref,
+                                request.archiving_controller_host_ref,
+                                request.instance_id,
+                                *this);
 
-                    if (worker_fiber && caller_fiber) {
-                        // Pump messages on GUI thread while fiber runs.
-                        SwitchToFiber(worker_fiber);
-                        DeleteFiber(worker_fiber);
-                    } else {
-                        if (worker_fiber) DeleteFiber(worker_fiber);
-                        ctrl_ctx.result =
-                            factory->createDocumentControllerWithDocument(
-                                ctrl_ctx.hi, ctrl_ctx.props);
-                    }
+                        ARA::ARADocumentProperties props{};
+                        props.structSize = static_cast<ARA::ARASize>(
+                            ARA_IMPLEMENTED_STRUCT_SIZE(ARADocumentProperties,
+                                                        name));
+                        const char* name_cstr =
+                            request.document_name.empty()
+                                ? nullptr
+                                : request.document_name.c_str();
+                        props.name = name_cstr;
 
-                    if (!was_already_fiber) {
-                        ConvertFiberToThread();
-                    }
+                        // Force-create a message queue on this thread so
+                        // MsgWaitForMultipleObjects on the GUI thread can
+                        // dispatch posted messages here if needed.
+                        {
+                            MSG dummy;
+                            PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
+                        }
 
-                    const ARA::ARADocumentControllerInstance* ctrl =
-                        ctrl_ctx.result;
-
-                    if (!ctrl) {
                         logger_.log(
-                            "WARNING: CreateDocumentController: Windows "
-                            "plugin returned null "
-                            "ARADocumentControllerInstance");
-                        instance.ara_document_controller_host_instance.reset();
-                        result_promise.set_value(0);
-                        return;
-                    }
+                            "NOTE: CreateDocumentController: calling "
+                            "createDocumentControllerWithDocument()");
 
-                    instance.ara_document_controller_instance = ctrl;
-                    logger_.log("NOTE: CreateDocumentController: succeeded");
-                    result_promise.set_value(reinterpret_cast<native_size_t>(ctrl));
-                }).wait();
+                        const ARA::ARADocumentControllerInstance* ctrl =
+                            factory->createDocumentControllerWithDocument(
+                                instance.ara_document_controller_host_instance
+                                    ->get(),
+                                &props);
+
+                        logger_.log(
+                            ctrl ? "NOTE: CreateDocumentController: succeeded"
+                                 : "WARNING: CreateDocumentController: Windows "
+                                   "plugin returned null "
+                                   "ARADocumentControllerInstance");
+
+                        if (!ctrl) {
+                            instance.ara_document_controller_host_instance
+                                .reset();
+                            OleUninitialize();
+                            promise->set_value(0);
+                            return;
+                        }
+
+                        instance.ara_document_controller_instance = ctrl;
+                        OleUninitialize();
+                        promise->set_value(reinterpret_cast<native_size_t>(ctrl));
+                    });
+
+                // Run on the GUI thread so Melodyne's message-pump callbacks
+                // are handled; wrap in CreateThread for the 32 MB stack.
+                main_context_
+                    .run_in_context([&]() -> void {
+                        // Force-create a message queue on the GUI thread
+                        // before spawning the worker so MsgWaitForMultipleObjects
+                        // can dispatch posted messages.
+                        {
+                            MSG dummy;
+                            PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
+                        }
+
+                        constexpr SIZE_T stack_size = 32 * 1024 * 1024;
+                        // Pre-allocate so we can delete on CreateThread failure.
+                        auto* create_fn_ptr =
+                            new fu2::unique_function<void()>(
+                                std::move(create_fn));
+                        HANDLE thread_handle = CreateThread(
+                            nullptr, stack_size,
+                            reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                                win32_thread_trampoline),
+                            create_fn_ptr,
+                            0, nullptr);
+
+                        if (thread_handle) {
+                            DWORD wr;
+                            do {
+                                wr = MsgWaitForMultipleObjects(
+                                    1, &thread_handle, FALSE, INFINITE,
+                                    QS_ALLINPUT);
+                                if (wr == WAIT_OBJECT_0 + 1) {
+                                    MSG msg;
+                                    while (PeekMessageW(&msg, nullptr, 0, 0,
+                                                        PM_REMOVE)) {
+                                        TranslateMessage(&msg);
+                                        DispatchMessageW(&msg);
+                                    }
+                                }
+                            } while (wr != WAIT_OBJECT_0 && wr != WAIT_FAILED);
+                            CloseHandle(thread_handle);
+                        } else {
+                            // CreateThread failed — fulfill the promise so
+                            // result_future.get() does not hang forever.
+                            logger_.log(
+                                "WARNING: CreateDocumentController: "
+                                "CreateThread failed");
+                            delete create_fn_ptr;
+                            result_promise->set_value(0);
+                        }
+                    })
+                    .wait();
 
                 return PrimitiveResponse<native_size_t>(result_future.get());
             },

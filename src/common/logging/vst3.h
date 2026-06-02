@@ -380,6 +380,9 @@ class Vst3Logger {
                       const YaHostApplication::GetNameResponse&);
     void log_response(bool is_host_plugin, const YaProgress::StartResponse&);
 
+    void log_response(bool is_host_plugin,
+                      const YaARAHostCallbacks::ReadBytesFromArchive::Response&);
+
     template <typename T>
     void log_response(bool is_host_plugin,
                       const PrimitiveResponse<T>& value,

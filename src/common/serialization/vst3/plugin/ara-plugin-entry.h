@@ -150,9 +150,10 @@ struct YaARAFactory {
 
     /**
      * Message to forward `ARAFactory::createDocumentControllerWithDocument()`
-     * to the Wine host. The host instance pointer from Carla is passed as an
-     * opaque integer; the wine host creates a `WineARADocumentControllerHostInstance`
-     * proxy and calls the real Windows plugin factory with it.
+     * to the Wine host. Instead of passing the raw Linux-side host instance
+     * pointer (which would be invalid in the Wine process), we serialize the
+     * individual host ref values that the Wine-side stubs need to route IPC
+     * callbacks back to the Linux host.
      *
      * The response is the opaque `ARADocumentControllerRef` returned by the
      * Windows plugin (a Wine-side pointer), which is then stored and passed
@@ -162,16 +163,19 @@ struct YaARAFactory {
         using Response = PrimitiveResponse<native_size_t>;
 
         native_size_t instance_id;
-        // The Linux-side ARADocumentControllerHostInstance pointer from Carla,
-        // passed as an opaque integer for the wine host to capture.
-        native_size_t host_instance_ptr;
+        // Serialized fields from the Linux-side ARADocumentControllerHostInstance.
+        // These are opaque integers (Linux-side host refs) used by the Wine-side
+        // stubs to route IPC callbacks back to the correct Carla objects.
+        native_size_t audio_access_controller_host_ref;
+        native_size_t archiving_controller_host_ref;
         // Serialized document properties (name only for now).
         std::string document_name;
 
         template <typename S>
         void serialize(S& s) {
             s.value8b(instance_id);
-            s.value8b(host_instance_ptr);
+            s.value8b(audio_access_controller_host_ref);
+            s.value8b(archiving_controller_host_ref);
             s.text1b(document_name, 1024);
         }
     };
@@ -263,14 +267,27 @@ struct YaARAHostCallbacks {
     };
 
     struct ReadBytesFromArchive {
-        using Response = PrimitiveResponse<ARA::ARABool>;
+        /**
+         * The response carries both the success flag and the filled byte
+         * payload. The Wine side sends the buffer back to the Windows plugin
+         * after the Linux host fills it.
+         */
+        struct Response {
+            ARA::ARABool ok = ARA::kARAFalse;
+            std::vector<uint8_t> buffer;
+
+            template <typename S>
+            void serialize(S& s) {
+                s.value4b(ok);
+                s.container1b(buffer, 64 * 1024 * 1024);  // 64 MiB max
+            }
+        };
 
         native_size_t instance_id;
         native_size_t archiving_controller_host_ref;
         native_size_t archive_reader_host_ref;
         uint64_t position;
         uint64_t length;
-        std::vector<uint8_t> buffer;  // filled on response side
 
         template <typename S>
         void serialize(S& s) {
@@ -279,7 +296,6 @@ struct YaARAHostCallbacks {
             s.value8b(archive_reader_host_ref);
             s.value8b(position);
             s.value8b(length);
-            s.container1b(buffer, 64 * 1024 * 1024);  // 64 MiB max
         }
     };
 

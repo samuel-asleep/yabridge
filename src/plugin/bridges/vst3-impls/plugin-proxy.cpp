@@ -126,8 +126,11 @@ Vst3PluginProxyImpl::bindToDocumentController(
     // opaque integer. The wine host will create a Wine-side document controller
     // proxy and call the Windows plugin's bindToDocumentController with the
     // correct Wine-side ref.
+    // Use send_mutually_recursive_message() because the Wine host may invoke
+    // host callbacks (e.g. audio reader creation) back into Carla while
+    // processing this request, which would deadlock with a plain send_message().
     const native_size_t result =
-        bridge_.send_message(YaARAPlugInEntryPoint::BindToDocumentController{
+        bridge_.send_mutually_recursive_message(YaARAPlugInEntryPoint::BindToDocumentController{
             .instance_id = instance_id(),
             .document_controller_ref =
                 reinterpret_cast<native_size_t>(documentControllerRef),
@@ -160,7 +163,10 @@ Vst3PluginProxyImpl::bindToDocumentControllerWithRoles(
         "called — forwarding to Windows plugin via IPC");
 
     // Same as above: pass Carla's ref directly to the wine host.
-    const native_size_t result = bridge_.send_message(
+    // Use send_mutually_recursive_message() for the same reason as
+    // bindToDocumentController(): the Wine host may trigger host callbacks
+    // during document controller binding.
+    const native_size_t result = bridge_.send_mutually_recursive_message(
         YaARAPlugInEntryPoint2::BindToDocumentControllerWithRoles{
             .instance_id = instance_id(),
             .document_controller_ref =

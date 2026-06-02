@@ -20,6 +20,7 @@
 #include <map>
 #include <shared_mutex>
 #include <string>
+#include <unordered_map>
 
 #include <public.sdk/source/vst/hosting/module.h>
 
@@ -122,7 +123,9 @@ struct WineARADocumentControllerHostInstance {
      * Captures all host refs as opaque native_size_t values and populates the
      * Wine-side function pointer tables with IPC-forwarding stubs.
      *
-     * @param linux_host_instance  The Linux-side pointer passed by Carla.
+     * @param linux_host_instance  The Linux-side pointer passed by Carla. May
+     *                             be null if refs are populated via the other
+     *                             constructor overload.
      * @param instance_id          The plugin instance this belongs to, used
      *                             to route IPC callbacks.
      * @param bridge               The bridge used to send IPC messages.
@@ -132,6 +135,22 @@ struct WineARADocumentControllerHostInstance {
         size_t instance_id,
         Vst3Bridge& bridge,
         native_size_t carla_document_controller_ref = 0) noexcept;
+
+    /**
+     * Construct the proxy from pre-serialized host refs. Used when the
+     * Linux-side pointer is not accessible (i.e. different process address
+     * space) and the individual refs have been serialized into the IPC message.
+     *
+     * @param audio_access_host_ref  Opaque Linux-side audio access host ref.
+     * @param archiving_host_ref     Opaque Linux-side archiving host ref.
+     * @param instance_id            The plugin instance this belongs to.
+     * @param bridge                 The bridge used to send IPC messages.
+     */
+    WineARADocumentControllerHostInstance(
+        native_size_t audio_access_host_ref,
+        native_size_t archiving_host_ref,
+        size_t instance_id,
+        Vst3Bridge& bridge) noexcept;
 
     /**
      * Return a pointer to the Wine-side host instance struct to pass to the
@@ -155,6 +174,15 @@ struct WineARADocumentControllerHostInstance {
     native_size_t carla_document_controller_ref_ = 0;
 
     // -----------------------------------------------------------------------
+    // Per-reader sample-width tracking.
+    // Keys are the opaque ARAAudioReaderHostRef values returned by
+    // createAudioReaderForSource(). Values are the sample byte size (4 for
+    // 32-bit float, 8 for 64-bit double). Used by ara_read_audio_samples() to
+    // zero the correct number of bytes per sample.
+    // -----------------------------------------------------------------------
+    std::unordered_map<native_size_t, size_t> reader_sample_byte_size_;
+
+    // -----------------------------------------------------------------------
     // Wine-side function pointer tables.
     // Each table is populated with static stub functions (defined in vst3.cpp)
     // that capture `this` via the host ref and forward to Carla via IPC.
@@ -171,6 +199,13 @@ struct WineARADocumentControllerHostInstance {
     // Back-reference used by the static stub functions to reach the bridge.
     size_t instance_id_ = 0;
     Vst3Bridge* bridge_ = nullptr;
+
+   private:
+    /**
+     * Populate the Wine-side function pointer tables and assemble the host
+     * instance struct. Called from both constructor overloads.
+     */
+    void populate_tables() noexcept;
 };
 
 /**

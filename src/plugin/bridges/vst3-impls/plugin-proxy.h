@@ -103,6 +103,16 @@ class AraFactoryProxy {
         active_proxy_ = this;
     }
 
+    ~AraFactoryProxy() noexcept {
+        // Clear the global pointer if it still points to this instance to
+        // avoid a dangling pointer. This is a best-effort guard; for correct
+        // multi-instance behaviour the global should be replaced with
+        // per-instance routing, but that requires a larger refactor.
+        if (active_proxy_ == this) {
+            active_proxy_ = nullptr;
+        }
+    }
+
     const ARA::ARAFactory* get() const noexcept { return &factory_; }
 
     // Public so vst3.cpp's YaARAHostCallbacks handlers can read them directly.
@@ -165,12 +175,25 @@ class AraFactoryProxy {
 
         active_proxy_->linux_host_instance_ = host_instance;
 
+        // Use send_mutually_recursive_message() because the Wine host may
+        // call host callbacks (e.g. createAudioReaderForSource) back into
+        // Carla while createDocumentControllerWithDocument() is in-flight.
+        // A plain send_message() would deadlock since the callback handler
+        // thread is blocked waiting for this response.
         const native_size_t result =
-            active_proxy_->bridge_.send_message(
+            active_proxy_->bridge_.send_mutually_recursive_message(
                 YaARAFactory::CreateDocumentController{
                     .instance_id = active_proxy_->instance_id_,
-                    .host_instance_ptr =
-                        reinterpret_cast<native_size_t>(host_instance),
+                    .audio_access_controller_host_ref =
+                        reinterpret_cast<native_size_t>(
+                            host_instance
+                                ? host_instance->audioAccessControllerHostRef
+                                : nullptr),
+                    .archiving_controller_host_ref =
+                        reinterpret_cast<native_size_t>(
+                            host_instance
+                                ? host_instance->archivingControllerHostRef
+                                : nullptr),
                     .document_name = doc_name,
                 });
 

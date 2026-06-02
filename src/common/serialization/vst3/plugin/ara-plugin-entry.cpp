@@ -71,9 +71,9 @@ YaARAFactorySnapshot::YaARAFactorySnapshot(
         factory->analyzeableContentTypes) {
         analyzeable_content_types.reserve(
             static_cast<size_t>(factory->analyzeableContentTypesCount));
-           for (ARA::ARASize i = 0;
-               i < factory->analyzeableContentTypesCount;
-               ++i) {
+        for (ARA::ARASize i = 0;
+             i < factory->analyzeableContentTypesCount;
+             ++i) {
             analyzeable_content_types.push_back(
                 factory->analyzeableContentTypes[i]);
         }

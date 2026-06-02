@@ -504,17 +504,19 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
 
                     auto* factory = proxy_object.ara_factory_proxy();
                     if (!factory || !factory->linux_host_instance_) {
-                        return PrimitiveResponse<ARA::ARABool>(ARA::kARAFalse);
+                        return YaARAHostCallbacks::ReadBytesFromArchive::Response{
+                            .ok = ARA::kARAFalse};
                     }
 
                     const auto* hi = factory->linux_host_instance_;
                     if (!hi->archivingControllerInterface ||
                         !hi->archivingControllerInterface
                              ->readBytesFromArchive) {
-                        return PrimitiveResponse<ARA::ARABool>(ARA::kARAFalse);
+                        return YaARAHostCallbacks::ReadBytesFromArchive::Response{
+                            .ok = ARA::kARAFalse};
                     }
 
-                    request.buffer.resize(
+                    std::vector<uint8_t> buffer(
                         static_cast<size_t>(request.length));
                     const ARA::ARABool ok =
                         hi->archivingControllerInterface->readBytesFromArchive(
@@ -524,8 +526,9 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                                     request.archive_reader_host_ref)),
                             static_cast<ARA::ARASize>(request.position),
                             static_cast<ARA::ARASize>(request.length),
-                            request.buffer.data());
-                    return PrimitiveResponse<ARA::ARABool>(ok);
+                            buffer.data());
+                    return YaARAHostCallbacks::ReadBytesFromArchive::Response{
+                        .ok = ok, .buffer = std::move(buffer)};
                 },
                 [&](const YaARAHostCallbacks::WriteBytesToArchive& request)
                     -> YaARAHostCallbacks::WriteBytesToArchive::Response {
