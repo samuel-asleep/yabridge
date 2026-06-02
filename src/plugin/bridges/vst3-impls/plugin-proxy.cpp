@@ -93,10 +93,9 @@ void Vst3PluginProxyImpl::clear_caches() noexcept {
 }
 
 // From `ARA::IPlugInEntryPoint`
-// These stubs are never reached because `queryInterface()` does not expose the
-// ARA interfaces until they are fully proxied. They exist only to satisfy the
-// abstract base class requirements of `YaARAPlugInEntryPoint` and
-// `YaARAPlugInEntryPoint2`.
+// These methods are reached when the host queries the ARA entry point IIDs.
+// They currently proxy `getFactory()` and forward document-controller binding
+// across the bridge; more complete ARA proxying is still pending.
 
 const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
     const YaARAPlugInEntryPoint::GetFactoryResponse response =
