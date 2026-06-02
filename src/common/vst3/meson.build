@@ -10,7 +10,6 @@ vst3 = subproject('vst3', version : '3.7.7')
 # is folded into every vst3_sdk_*_dep below so no other meson.build needs
 # to reference it explicitly.
 ara_sdk_inc = include_directories('../../../subprojects/ara-sdk', is_system : true)
-ara_sdk_dep = declare_dependency(include_directories : ara_sdk_inc)
 
 # Also include our normal compiler options so symbols are hidden by default
 vst3_compiler_options = compiler_options + vst3.get_variable('compiler_options')
