@@ -979,18 +979,16 @@ void Vst3Bridge::run() {
             },
             [&](const YaARAFactory::Initialize& request)
                 -> YaARAFactory::Initialize::Response {
-                // initializeARAWithConfiguration() in Melodyne likely creates
-                // hidden windows and needs the calling thread to pump its own
-                // Win32 message queue. We use a two-level thread pattern
-                // matching BindToDocumentController:
-                //   - Outer thread: 32MB stack, forces a message queue, spawns
-                //     the inner thread, then pumps messages via
-                //     MsgWaitForMultipleObjects while waiting.
-                //   - Inner thread: calls the factory function directly.
-                // This way any WM_CREATE/WM_NCCREATE dispatched back to the
-                // calling thread are handled immediately.
-                //
-                // assertFunctionAddress = nullptr (cannot cross process boundary).
+                // initializeARAWithConfiguration() requires:
+                // 1. A large stack (32 MB) — Melodyne's call chain overflows
+                //    Wine's default 1 MB thread stack.
+                // 2. OleInitialize + a Win32 message queue on the calling thread.
+                // 3. assertFunctionAddress must be a NON-NULL pointer to a
+                //    (possibly null) function pointer. Melodyne dereferences
+                //    it unconditionally; passing nullptr causes an AV → infinite
+                //    SEH retry loop. Passing &null_assert_fn (null fn ptr value)
+                //    satisfies the spec ("can point to NULL to suppress
+                //    debugging") without crashing.
                 std::promise<bool> done_promise;
                 auto done_future = done_promise.get_future();
 
@@ -1012,7 +1010,13 @@ void Vst3Bridge::run() {
                         ARA::kARAInterfaceConfigurationMinSize);
                     config.desiredApiGeneration =
                         request.config.desired_api_generation;
-                    config.assertFunctionAddress = nullptr;
+                    // The spec says assertFunctionAddress must be a non-null
+                    // pointer to a function pointer (which itself can be null
+                    // to suppress assertions). Passing nullptr crashes Melodyne
+                    // because it dereferences the pointer unconditionally.
+                    // We provide a pointer to a static null function pointer.
+                    static ARA::ARAAssertFunction null_assert_fn = nullptr;
+                    config.assertFunctionAddress = &null_assert_fn;
                 }
                 const bool has_config = request.config.has_config;
 
