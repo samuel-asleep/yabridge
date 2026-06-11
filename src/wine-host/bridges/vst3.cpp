@@ -979,99 +979,131 @@ void Vst3Bridge::run() {
             },
             [&](const YaARAFactory::Initialize& request)
                 -> YaARAFactory::Initialize::Response {
-                // initializeARAWithConfiguration() requires a large stack:
-                // Melodyne's call chain overflows Wine's default 1 MB GUI
-                // thread stack. We spawn a dedicated CreateThread with a
-                // 32 MB reserved stack and wait for it to complete via
-                // WaitForSingleObject — no message pump is needed because
-                // initializeARAWithConfiguration() does not call back into
-                // the host.
+                // initializeARAWithConfiguration() requires a large stack (32 MB)
+                // and must be waited on using CoWaitForMultipleHandles (or
+                // MsgWaitForMultipleObjects) from a COM STA thread so that any
+                // COM apartment-transition calls Melodyne makes internally can
+                // be dispatched while we wait.
                 //
-                // The struct uses #pragma pack(1) on x86 (both 32 and 64
-                // bit), giving 20 bytes:
-                //   offset  0: structSize           (size_t, 8 bytes)
-                //   offset  8: desiredApiGeneration  (4-byte enum)
-                //   offset 12: assertFunctionAddress (pointer, 8 bytes)
-                // assertFunctionAddress = nullptr (function pointers cannot
-                // cross process boundaries, as the ARA IPC proxy does).
-                struct InitCtx {
-                    const ARA::ARAFactory* factory;
-                    ARA::ARAInterfaceConfiguration config;
-                    bool has_config;
-                    Vst3Logger* logger;
-                };
+                // Pattern: run_in_context (GUI STA thread) spawns a 32 MB
+                // CreateThread worker and pumps Win32 messages while waiting,
+                // allowing COM marshaling back to the GUI STA to complete.
+                //
+                // assertFunctionAddress = nullptr (cannot cross process boundary).
+                return main_context_
+                    .run_in_context([&]() -> Ack {
+                        const auto& [instance, _] =
+                            get_instance(request.instance_id);
+                        Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
+                            entry_point(instance.object);
+                        if (!entry_point) {
+                            return Ack{};
+                        }
+                        const ARA::ARAFactory* factory =
+                            entry_point->getFactory();
+                        if (!factory ||
+                            !factory->initializeARAWithConfiguration) {
+                            return Ack{};
+                        }
 
-                // Build the config on the IPC handler thread; it will be
-                // read by the worker thread which outlives this scope only
-                // via WaitForSingleObject ensuring the stack frame stays alive.
-                const auto& [instance, _] =
-                    get_instance(request.instance_id);
-                Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                    entry_point(instance.object);
-                if (!entry_point) {
-                    return Ack{};
-                }
-                const ARA::ARAFactory* factory = entry_point->getFactory();
-                if (!factory || !factory->initializeARAWithConfiguration) {
-                    return Ack{};
-                }
+                        ARA::ARAInterfaceConfiguration config{};
+                        if (request.config.has_config) {
+                            config.structSize = static_cast<ARA::ARASize>(
+                                ARA::kARAInterfaceConfigurationMinSize);
+                            config.desiredApiGeneration =
+                                request.config.desired_api_generation;
+                            config.assertFunctionAddress = nullptr;
+                        }
+                        const bool has_config = request.config.has_config;
 
-                ARA::ARAInterfaceConfiguration config{};
-                if (request.config.has_config) {
-                    config.structSize = static_cast<ARA::ARASize>(
-                        ARA::kARAInterfaceConfigurationMinSize);
-                    config.desiredApiGeneration =
-                        request.config.desired_api_generation;
-                    config.assertFunctionAddress = nullptr;
-                }
+                        // Force-create a message queue on the GUI thread so
+                        // MsgWaitForMultipleObjects works correctly.
+                        {
+                            MSG dummy;
+                            PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
+                        }
 
-                InitCtx ctx{factory, config,
-                            request.config.has_config, &logger_};
+                        struct WorkCtx {
+                            const ARA::ARAFactory* factory;
+                            ARA::ARAInterfaceConfiguration config;
+                            bool has_config;
+                            Vst3Logger* logger;
+                        } work_ctx{factory, config, has_config, &logger_};
 
-                auto work_fn = fu2::unique_function<void()>([&ctx]() {
-                    OleInitialize(nullptr);
-                    ctx.logger->log(
-                        "NOTE: ARA initializeARAWithConfiguration: "
-                        "worker thread calling (desiredApiGeneration=" +
-                        std::to_string(static_cast<int>(
-                            ctx.config.desiredApiGeneration)) +
-                        ")");
-                    ctx.factory->initializeARAWithConfiguration(
-                        ctx.has_config ? &ctx.config : nullptr);
-                    ctx.logger->log(
-                        "NOTE: ARA initializeARAWithConfiguration: "
-                        "worker thread returned");
-                    OleUninitialize();
-                });
+                        auto work_fn =
+                            fu2::unique_function<void()>([&work_ctx]() {
+                                // Do NOT call OleInitialize on this thread —
+                                // the DLL was loaded on the GUI thread (STA),
+                                // and calling OleInitialize here would create
+                                // a second STA whose COM inter-apartment calls
+                                // would need marshaling back to the GUI STA,
+                                // potentially causing deadlocks. The factory
+                                // function pointer call works without COM init.
+                                work_ctx.logger->log(
+                                    "NOTE: ARA initializeARAWithConfiguration: "
+                                    "worker thread calling "
+                                    "(desiredApiGeneration=" +
+                                    std::to_string(static_cast<int>(
+                                        work_ctx.config
+                                            .desiredApiGeneration)) +
+                                    ")");
+                                work_ctx.factory
+                                    ->initializeARAWithConfiguration(
+                                        work_ctx.has_config
+                                            ? &work_ctx.config
+                                            : nullptr);
+                                work_ctx.logger->log(
+                                    "NOTE: ARA initializeARAWithConfiguration: "
+                                    "worker thread returned");
+                            });
 
-                auto* work_fn_ptr =
-                    new fu2::unique_function<void()>(std::move(work_fn));
+                        auto* work_fn_ptr =
+                            new fu2::unique_function<void()>(
+                                std::move(work_fn));
+                        constexpr SIZE_T stack_size = 32 * 1024 * 1024;
+                        HANDLE thread_handle = CreateThread(
+                            nullptr, stack_size,
+                            reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                                win32_thread_trampoline),
+                            work_fn_ptr,
+                            STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
 
-                constexpr SIZE_T stack_size = 32 * 1024 * 1024;
-                HANDLE thread_handle = CreateThread(
-                    nullptr, stack_size,
-                    reinterpret_cast<LPTHREAD_START_ROUTINE>(
-                        win32_thread_trampoline),
-                    work_fn_ptr,
-                    STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+                        if (thread_handle) {
+                            // Pump Win32 messages on the GUI STA thread while
+                            // the worker runs. This allows COM apartment-
+                            // transition calls (e.g. to OleMainThreadWndClass)
+                            // from Melodyne's init to be dispatched.
+                            DWORD wr;
+                            do {
+                                wr = MsgWaitForMultipleObjects(
+                                    1, &thread_handle, FALSE, INFINITE,
+                                    QS_ALLINPUT);
+                                if (wr == WAIT_OBJECT_0 + 1) {
+                                    MSG msg;
+                                    while (PeekMessageW(&msg, nullptr, 0, 0,
+                                                        PM_REMOVE)) {
+                                        TranslateMessage(&msg);
+                                        DispatchMessageW(&msg);
+                                    }
+                                }
+                            } while (wr != WAIT_OBJECT_0 &&
+                                     wr != WAIT_FAILED);
+                            CloseHandle(thread_handle);
+                            logger_.log(
+                                "NOTE: ARA initializeARAWithConfiguration: "
+                                "worker thread finished");
+                        } else {
+                            logger_.log(
+                                "WARNING: ARA initializeARAWithConfiguration: "
+                                "CreateThread failed, calling directly");
+                            delete work_fn_ptr;
+                            factory->initializeARAWithConfiguration(
+                                has_config ? &config : nullptr);
+                        }
 
-                if (thread_handle) {
-                    WaitForSingleObject(thread_handle, INFINITE);
-                    CloseHandle(thread_handle);
-                    logger_.log(
-                        "NOTE: ARA initializeARAWithConfiguration: "
-                        "worker thread finished");
-                } else {
-                    logger_.log(
-                        "WARNING: ARA initializeARAWithConfiguration: "
-                        "CreateThread failed, calling directly "
-                        "(may stack-overflow)");
-                    delete work_fn_ptr;
-                    factory->initializeARAWithConfiguration(
-                        request.config.has_config ? &config : nullptr);
-                }
-
-                return Ack{};
+                        return Ack{};
+                    })
+                    .get();
             },
             [&](const YaARAFactory::Uninitialize& request)
                 -> YaARAFactory::Uninitialize::Response {
