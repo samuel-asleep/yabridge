@@ -615,7 +615,7 @@ void Vst3Bridge::run() {
                                 reinterpret_cast<LPTHREAD_START_ROUTINE>(
                                     win32_thread_trampoline),
                                 inner_fn_ptr,
-                                0, nullptr);
+                                STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
 
                             if (inner_handle) {
                                 DWORD wr;
@@ -670,7 +670,7 @@ void Vst3Bridge::run() {
                         reinterpret_cast<LPTHREAD_START_ROUTINE>(
                             win32_thread_trampoline),
                         create_fn_ptr,
-                        0, nullptr);
+                        STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
 
                     if (thread_handle) {
                         WaitForSingleObject(thread_handle, INFINITE);
@@ -826,7 +826,7 @@ void Vst3Bridge::run() {
                                 reinterpret_cast<LPTHREAD_START_ROUTINE>(
                                     win32_thread_trampoline),
                                 inner_fn_ptr,
-                                0, nullptr);
+                                STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
 
                             if (inner_handle) {
                                 DWORD wr;
@@ -881,7 +881,7 @@ void Vst3Bridge::run() {
                         reinterpret_cast<LPTHREAD_START_ROUTINE>(
                             win32_thread_trampoline),
                         create_fn_ptr,
-                        0, nullptr);
+                        STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
 
                     if (thread_handle) {
                         WaitForSingleObject(thread_handle, INFINITE);
@@ -979,12 +979,28 @@ void Vst3Bridge::run() {
             },
             [&](const YaARAFactory::Initialize& request)
                 -> YaARAFactory::Initialize::Response {
-                // Melodyne's initializeARAWithConfiguration() must be called
-                // from the GUI thread (the thread that loaded the plugin DLL).
-                // The GUI thread's default stack (~64KB) overflows Melodyne's
-                // deep call chain. We use Windows Fibers to switch to a large
-                // stack while remaining on the GUI thread, preserving thread
-                // identity for any thread-affinity checks Melodyne may do.
+                // Melodyne's initializeARAWithConfiguration() needs a large
+                // stack (its call chain overflows Wine's default ~64 KB
+                // thread stack) AND the GUI thread must be free to pump Win32
+                // messages while it runs (Wine fibers don't give the original
+                // thread stack the extra space — they still overflow).
+                //
+                // IMPORTANT: ARAInterfaceConfiguration layout mismatch.
+                // GCC (Linux/Wine) packs the struct to 20 bytes:
+                //   offset  0: structSize          (size_t, 8 bytes)
+                //   offset  8: desiredApiGeneration (ARAAPIGeneration, 4 bytes)
+                //   offset 12: assertFunctionAddress (pointer, 8 bytes) ← GCC
+                // MSVC (Windows Melodyne) pads to 24 bytes:
+                //   offset  0: structSize          (8 bytes)
+                //   offset  8: desiredApiGeneration (4 bytes)
+                //   offset 12: padding             (4 bytes)
+                //   offset 16: assertFunctionAddress (8 bytes) ← MSVC
+                // We must use a hand-laid-out struct that matches MSVC's layout
+                // so Melodyne reads assertFunctionAddress from the right offset.
+                //
+                // Solution: CreateThread with STACK_SIZE_PARAM_IS_A_RESERVATION
+                // so the 32 MB is a true reservation, then pump messages on the
+                // GUI thread via MsgWaitForMultipleObjects until worker finishes.
                 return main_context_
                     .run_in_context([&]() -> Ack {
                         const auto& [instance, _] =
@@ -1002,226 +1018,134 @@ void Vst3Bridge::run() {
                             return Ack{};
                         }
 
-                        ARA::ARAInterfaceConfiguration config{};
-                        const ARA::ARAInterfaceConfiguration* config_ptr =
-                            nullptr;
-                        // assertFunctionAddress must be a valid pointer to an
-                        // ARAAssertFunction* (pointer-to-function-pointer).
-                        // Per ARA spec: "It must remain valid until
-                        // uninitializeARA() is called." A local stack variable
-                        // would be destroyed when this function returns, so
-                        // the pointer must outlive the call — `static` gives
-                        // it process lifetime.
-                        //
-                        // We supply a real no-op assert function rather than
-                        // NULL: the spec allows NULL, but some plugins
-                        // dereference and call without null-checking, which
-                        // would crash with a NULL function pointer.
+                        // Keep assert_fn alive for the lifetime of the process
+                        // (ARA spec: must stay valid until uninitializeARA).
                         struct AssertHolder {
                             static void WINAPI noop_assert(
-                                ARA::ARAAssertCategory /*category*/,
-                                const void* /*problematicArgument*/,
-                                const char* /*diagnosis*/) {
-                                // Intentionally empty — ARA spec allows the
-                                // host to silently suppress assertions.
-                                // WINAPI ensures Windows calling convention
-                                // so Melodyne can call this safely.
-                            }
+                                ARA::ARAAssertCategory,
+                                const void*,
+                                const char*) noexcept {}
                         };
                         static ARA::ARAAssertFunction assert_fn =
                             reinterpret_cast<ARA::ARAAssertFunction>(
                                 &AssertHolder::noop_assert);
+
+                        // Hand-laid-out buffer matching the Windows/MSVC
+                        // ARAInterfaceConfiguration layout (24 bytes):
+                        //   [0 ] structSize            (uint64_t, 8 bytes)
+                        //   [8 ] desiredApiGeneration  (uint32_t, 4 bytes)
+                        //   [12] padding               (uint32_t, 4 bytes)
+                        //   [16] assertFunctionAddress (uint64_t, 8 bytes)
+                        // This ensures Melodyne reads the pointer from offset 16
+                        // regardless of the GCC struct layout on the Wine side.
+                        const ARA::ARAInterfaceConfiguration* config_ptr =
+                            nullptr;
+                        alignas(8) uint8_t config_buf[24]{};
                         if (request.config.has_config) {
-                            // Always use kARAInterfaceConfigurationMinSize
-                            // (24) as structSize so Melodyne knows
-                            // assertFunctionAddress is present. REAPER passes
-                            // structSize=20 (its own packed layout), but
-                            // Melodyne on Windows expects offset 16 for
-                            // assertFunctionAddress and needs structSize >= 24
-                            // to know the field exists.
-                            config.structSize = static_cast<ARA::ARASize>(
-                                ARA::kARAInterfaceConfigurationMinSize);
-                            config.desiredApiGeneration =
-                                request.config.desired_api_generation;
-                            config.assertFunctionAddress = &assert_fn;
-                            config_ptr = &config;
+                            // structSize = 24 (kARAInterfaceConfigurationMinSize
+                            // under MSVC layout)
+                            const uint64_t struct_size = 24;
+                            const uint32_t api_gen = static_cast<uint32_t>(
+                                request.config.desired_api_generation);
+                            // assertFunctionAddress value (the address of
+                            // assert_fn, which is itself a function pointer)
+                            const uint64_t assert_addr =
+                                reinterpret_cast<uint64_t>(&assert_fn);
+                            std::memcpy(config_buf + 0,  &struct_size, 8);
+                            std::memcpy(config_buf + 8,  &api_gen,     4);
+                            // bytes 12..15 = zero padding
+                            std::memcpy(config_buf + 16, &assert_addr, 8);
+                            config_ptr =
+                                reinterpret_cast<
+                                    const ARA::ARAInterfaceConfiguration*>(
+                                    config_buf);
                         }
 
-                        // Extensive debug logging to diagnose the crash at
-                        // melodynecore+0x19e1210: mov (%rax), %r9
-                        // rax=0x0128547000000000 — config pointer is corrupted
                         logger_.log(
-                            "DEBUG: ARA initializeARAWithConfiguration: "
-                            "has_config=" + std::string(request.config.has_config ? "true" : "false") +
-                            " config_ptr=" + (config_ptr
-                                ? "0x" + [](uintptr_t v) {
-                                    char buf[32]; snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)v); return std::string(buf);
-                                  }(reinterpret_cast<uintptr_t>(config_ptr))
-                                : "null"));
-                        if (config_ptr) {
-                            logger_.log(
-                                "DEBUG: ARA config struct: "
-                                "structSize=" + std::to_string(config_ptr->structSize) +
-                                " desiredApiGeneration=" + std::to_string(static_cast<int>(config_ptr->desiredApiGeneration)) +
-                                " assertFunctionAddress=" + (config_ptr->assertFunctionAddress
-                                    ? "0x" + [](uintptr_t v) {
-                                        char buf[32]; snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)v); return std::string(buf);
-                                      }(reinterpret_cast<uintptr_t>(config_ptr->assertFunctionAddress))
-                                    : "null") +
-                                " *assertFunctionAddress=" + (config_ptr->assertFunctionAddress && *config_ptr->assertFunctionAddress
-                                    ? "0x" + [](uintptr_t v) {
-                                        char buf[32]; snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)v); return std::string(buf);
-                                      }(reinterpret_cast<uintptr_t>(*config_ptr->assertFunctionAddress))
-                                    : "null"));
-                            logger_.log(
-                                "DEBUG: ARA config raw bytes at " +
-                                [](uintptr_t v) {
-                                    char buf[32]; snprintf(buf, sizeof(buf), "0x%016llx", (unsigned long long)v); return std::string(buf);
-                                }(reinterpret_cast<uintptr_t>(config_ptr)) +
-                                ": sizeof=" + std::to_string(sizeof(*config_ptr)) +
-                                " offsetof(structSize)=" + std::to_string(offsetof(ARA::ARAInterfaceConfiguration, structSize)) +
-                                " offsetof(desiredApiGeneration)=" + std::to_string(offsetof(ARA::ARAInterfaceConfiguration, desiredApiGeneration)) +
-                                " offsetof(assertFunctionAddress)=" + std::to_string(offsetof(ARA::ARAInterfaceConfiguration, assertFunctionAddress)));
-                        }
-                        logger_.log(
-                            "DEBUG: ARA factory ptr=" +
-                            [](uintptr_t v) {
-                                char buf[32]; snprintf(buf, sizeof(buf), "0x%016llx", (unsigned long long)v); return std::string(buf);
-                            }(reinterpret_cast<uintptr_t>(factory)) +
-                            " initializeARAWithConfiguration=" +
-                            [](uintptr_t v) {
-                                char buf[32]; snprintf(buf, sizeof(buf), "0x%016llx", (unsigned long long)v); return std::string(buf);
-                            }(reinterpret_cast<uintptr_t>(
-                                reinterpret_cast<const void*>(factory->initializeARAWithConfiguration))));
+                            "NOTE: ARA initializeARAWithConfiguration: "
+                            "spawning 32 MB worker thread + GUI message pump "
+                            "(MSVC-layout config buf, structSize=24)");
 
-                        // Use a Windows Fiber with a 32MB stack to call
-                        // initializeARAWithConfiguration() on the GUI thread
-                        // without overflowing the default ~64KB main stack.
-                        // Fibers run on the same thread, preserving thread
-                        // identity and COM STA affinity.
-                        struct FiberCtx {
+                        // Force-create a message queue on the GUI thread
+                        // before spawning the worker so MsgWaitForMultipleObjects
+                        // works correctly.
+                        {
+                            MSG dummy;
+                            PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
+                        }
+
+                        struct WorkCtx {
                             const ARA::ARAFactory* factory;
                             const ARA::ARAInterfaceConfiguration* config_ptr;
-                            LPVOID caller_fiber = nullptr;
-                            bool done = false;
-                            Vst3Logger* logger = nullptr;
-                        } ctx{ factory, config_ptr };
-                        ctx.logger = &logger_;
-                        // Convert the current thread to a fiber.
-                        // If ConvertThreadToFiber fails the thread is already
-                        // a fiber — retrieve the existing handle.
-                        LPVOID caller_fiber = ConvertThreadToFiber(nullptr);
-                        bool was_already_fiber = false;
-                        if (!caller_fiber) {
-                            caller_fiber = GetCurrentFiber();
-                            was_already_fiber = true;
-                        }
-                        ctx.caller_fiber = caller_fiber;
+                            Vst3Logger* logger;
+                        } work_ctx{factory, config_ptr, &logger_};
 
-                        // LPFIBER_START_ROUTINE requires Windows calling
-                        // convention — use a static function, not a lambda.
-                        struct FiberFn {
-                            static void WINAPI run(LPVOID param) {
-                                auto* c = static_cast<FiberCtx*>(param);
-                                if (c->logger) {
-                                    c->logger->log(
-                                        "DEBUG: ARA fiber: config_ptr=" +
-                                        [](uintptr_t v) {
-                                            char buf[32];
-                                            snprintf(buf, sizeof(buf),
-                                                     "0x%016llx",
-                                                     (unsigned long long)v);
-                                            return std::string(buf);
-                                        }(reinterpret_cast<uintptr_t>(
-                                            c->config_ptr)) +
-                                        " factory=" +
-                                        [](uintptr_t v) {
-                                            char buf[32];
-                                            snprintf(buf, sizeof(buf),
-                                                     "0x%016llx",
-                                                     (unsigned long long)v);
-                                            return std::string(buf);
-                                        }(reinterpret_cast<uintptr_t>(
-                                            c->factory)));
-                                    if (c->config_ptr) {
-                                        c->logger->log(
-                                            "DEBUG: ARA fiber: config "
-                                            "contents: structSize=" +
-                                            std::to_string(
-                                                c->config_ptr->structSize) +
-                                            " desiredApiGen=" +
-                                            std::to_string(static_cast<int>(
-                                                c->config_ptr
-                                                    ->desiredApiGeneration)) +
-                                            " assertFnAddr=" +
-                                            [](uintptr_t v) {
-                                                char buf[32];
-                                                snprintf(buf, sizeof(buf),
-                                                         "0x%016llx",
-                                                         (unsigned long long)v);
-                                                return std::string(buf);
-                                            }(reinterpret_cast<uintptr_t>(
-                                                c->config_ptr
-                                                    ->assertFunctionAddress)));
+                        auto work_fn = fu2::unique_function<void()>(
+                            [&work_ctx]() {
+                                OleInitialize(nullptr);
+                                work_ctx.logger->log(
+                                    "NOTE: ARA initializeARAWithConfiguration: "
+                                    "worker thread: calling "
+                                    "initializeARAWithConfiguration");
+                                work_ctx.factory
+                                    ->initializeARAWithConfiguration(
+                                        work_ctx.config_ptr);
+                                work_ctx.logger->log(
+                                    "NOTE: ARA initializeARAWithConfiguration: "
+                                    "worker thread: returned");
+                                OleUninitialize();
+                            });
+
+                        // Pre-allocate so we can delete on CreateThread failure.
+                        auto* work_fn_ptr =
+                            new fu2::unique_function<void()>(
+                                std::move(work_fn));
+
+                        // STACK_SIZE_PARAM_IS_A_RESERVATION ensures Wine
+                        // reserves + commits the full 32 MB stack rather than
+                        // growing it lazily from a tiny guard page.
+                        constexpr SIZE_T stack_size = 32 * 1024 * 1024;
+                        HANDLE thread_handle = CreateThread(
+                            nullptr,
+                            stack_size,
+                            reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                                win32_thread_trampoline),
+                            work_fn_ptr,
+                            STACK_SIZE_PARAM_IS_A_RESERVATION,
+                            nullptr);
+
+                        if (thread_handle) {
+                            // Pump the GUI message queue while the worker runs
+                            // so that any SendMessage / PostMessage from
+                            // Melodyne's init path is dispatched immediately.
+                            DWORD wr;
+                            do {
+                                wr = MsgWaitForMultipleObjects(
+                                    1, &thread_handle, FALSE, INFINITE,
+                                    QS_ALLINPUT);
+                                if (wr == WAIT_OBJECT_0 + 1) {
+                                    MSG msg;
+                                    while (PeekMessageW(&msg, nullptr, 0, 0,
+                                                        PM_REMOVE)) {
+                                        TranslateMessage(&msg);
+                                        DispatchMessageW(&msg);
                                     }
-                                    c->logger->log(
-                                        "DEBUG: ARA fiber: calling "
-                                        "initializeARAWithConfiguration now");
                                 }
-                                c->factory->initializeARAWithConfiguration(
-                                    c->config_ptr);
-                                if (c->logger) {
-                                    c->logger->log(
-                                        "DEBUG: ARA fiber: "
-                                        "initializeARAWithConfiguration "
-                                        "returned");
-                                }
-                                c->done = true;
-                                // Switch back to the caller fiber.
-                                if (c->caller_fiber) {
-                                    SwitchToFiber(c->caller_fiber);
-                                }
-                            }
-                        };
-
-                        constexpr SIZE_T fiber_stack = 32 * 1024 * 1024;
-                        LPVOID worker_fiber = CreateFiber(
-                            fiber_stack,
-                            FiberFn::run,
-                            &ctx);
-
-                        if (worker_fiber && caller_fiber) {
+                            } while (wr != WAIT_OBJECT_0 &&
+                                     wr != WAIT_FAILED);
+                            CloseHandle(thread_handle);
                             logger_.log(
                                 "NOTE: ARA initializeARAWithConfiguration: "
-                                "switching to 32MB fiber");
-                            SwitchToFiber(worker_fiber);
-                            // We're back — initializeARAWithConfiguration
-                            // has returned and the worker fiber switched back.
-                            logger_.log(
-                                "NOTE: ARA initializeARAWithConfiguration: "
-                                "returned from fiber (done=" +
-                                std::string(ctx.done ? "true" : "false") + ")");
-                            DeleteFiber(worker_fiber);
+                                "worker thread finished");
                         } else {
-                            // Fiber setup failed — fall back to direct call.
                             logger_.log(
                                 "WARNING: ARA initializeARAWithConfiguration: "
-                                "fiber setup failed (caller=" +
-                                std::to_string(
-                                    reinterpret_cast<uintptr_t>(caller_fiber)) +
-                                ", worker=" +
-                                std::to_string(
-                                    reinterpret_cast<uintptr_t>(worker_fiber)) +
-                                "); falling back to direct call");
-                            if (worker_fiber) {
-                                DeleteFiber(worker_fiber);
-                            }
+                                "CreateThread failed — falling back to direct "
+                                "call (may stack-overflow)");
+                            delete work_fn_ptr;
                             factory->initializeARAWithConfiguration(config_ptr);
                         }
 
-                        if (!was_already_fiber) {
-                            ConvertFiberToThread();
-                        }
                         return Ack{};
                     })
                     .get();
@@ -1374,7 +1298,7 @@ void Vst3Bridge::run() {
                             reinterpret_cast<LPTHREAD_START_ROUTINE>(
                                 win32_thread_trampoline),
                             create_fn_ptr,
-                            0, nullptr);
+                            STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
 
                         if (thread_handle) {
                             DWORD wr;
