@@ -350,7 +350,7 @@ struct YaARAHostCallbacks {
 };
 
 /**
- * A minimal stub for `ARA::ARAPlugInExtensionInstance` returned by
+ * A stub for `ARA::ARAPlugInExtensionInstance` returned by
  * `bindToDocumentController()` and `bindToDocumentControllerWithRoles()`.
  *
  * Carla (and other ARA hosts) spin in an infinite loop when these functions
@@ -359,7 +359,9 @@ struct YaARAHostCallbacks {
  *
  * All role interfaces (playback renderer, editor renderer, editor view) are
  * left as null pointers — the ARA spec requires hosts to null-check them before
- * use, so this is safe. The deprecated ARA 1 fields are also null per spec.
+ * use, so this is safe. Full role interface proxying (forwarding calls to the
+ * Windows plugin's role interfaces via IPC) is deferred to a future
+ * implementation. The deprecated ARA 1 fields are also null per spec.
  *
  * Lifetime: one instance is created per `bindToDocumentController[WithRoles]()`
  * call and owned by the `Vst3PluginProxyImpl` that made the call.
@@ -381,8 +383,8 @@ class AraPlugInExtensionProxy {
 };
 
 /**
- * Wraps around `ARA::IPlugInEntryPoint` for detection purposes. This is
- * instantiated as part of `Vst3PluginProxy`.
+ * Wraps around `ARA::IPlugInEntryPoint` and proxies it across the bridge.
+ * This is instantiated as part of `Vst3PluginProxy`.
  *
  * ARA (Audio Random Access) is a Celemony extension to VST3 that allows
  * hosts like Logic Pro, Studio One, and Cubase to perform advanced audio
@@ -391,9 +393,15 @@ class AraPlugInExtensionProxy {
  * (e.g. Melodyne, Elastique) attach an `IPlugInEntryPoint` to their
  * `IAudioProcessor` component.
  *
- * This wrapper only implements detection (`ConstructArgs`) — no method
- * serialization structs are defined yet, so the interface is never actually
- * proxied across the bridge.
+ * The following methods are proxied across the bridge via IPC in
+ * `Vst3PluginProxyImpl`:
+ *  - `getFactory()` — serializes the `ARAFactory` snapshot and reconstructs it
+ *    on the Linux side as an `AraFactoryProxy` with all function pointers wired
+ *    up to forward calls back to the Windows plugin.
+ *  - `bindToDocumentController()` — forwards the host's document controller ref
+ *    to the Wine side, which calls `createDocumentControllerWithDocument()` if
+ *    needed, then calls the Windows plugin's bind method and returns a valid
+ *    `ARAPlugInExtensionInstance` stub.
  */
 class YaARAPlugInEntryPoint : public ARA::IPlugInEntryPoint {
    public:
@@ -404,9 +412,9 @@ class YaARAPlugInEntryPoint : public ARA::IPlugInEntryPoint {
         ConstructArgs() noexcept;
 
         /**
-         * Check whether an existing implementation implements
+         * Check whether an existing implementation supports
          * `ARA::IPlugInEntryPoint` and read arguments from it.
-         * Logs a message if ARA support is detected.
+         * Logs a detection message on the Wine side when ARA capability is found.
          */
         ConstructArgs(Steinberg::IPtr<Steinberg::FUnknown> object) noexcept;
 
@@ -473,10 +481,10 @@ class YaARAPlugInEntryPoint : public ARA::IPlugInEntryPoint {
         }
     };
 
-    // ARA::IPlugInEntryPoint pure virtual methods — not yet implemented.
-    // These must be declared to satisfy the abstract base class, but they will
-    // never be called because `queryInterface()` in `plugin-proxy.cpp` will
-    // not return this interface until it is fully proxied.
+    // ARA::IPlugInEntryPoint pure virtual methods.
+    // Overridden in `Vst3PluginProxyImpl` (plugin-proxy.cpp) to forward
+    // `getFactory()`, `bindToDocumentController()`, and
+    // `bindToDocumentControllerWithRoles()` across the bridge via IPC.
     virtual const ARA::ARAFactory* PLUGIN_API getFactory() override = 0;
     ARA_DEPRECATED(2_0_Draft)
     virtual const ARA::ARAPlugInExtensionInstance* PLUGIN_API
@@ -488,15 +496,17 @@ class YaARAPlugInEntryPoint : public ARA::IPlugInEntryPoint {
 };
 
 /**
- * Wraps around `ARA::IPlugInEntryPoint2` for detection purposes. This is
- * instantiated as part of `Vst3PluginProxy`.
+ * Wraps around `ARA::IPlugInEntryPoint2` and proxies it across the bridge.
+ * This is instantiated as part of `Vst3PluginProxy`.
  *
  * `IPlugInEntryPoint2` is the ARA 2.0 extension of `IPlugInEntryPoint`. It
  * adds `bindToDocumentControllerWithRoles()`, which allows the host to assign
  * specific roles (playback renderer, edit renderer, editor view) to each
  * plugin instance.
  *
- * Like `YaARAPlugInEntryPoint`, this wrapper only implements detection.
+ * `bindToDocumentControllerWithRoles()` is proxied in `Vst3PluginProxyImpl`
+ * with an ARA 1 fallback to `bindToDocumentController()` for plugins that only
+ * implement `IPlugInEntryPoint`.
  */
 class YaARAPlugInEntryPoint2 : public ARA::IPlugInEntryPoint2 {
    public:
@@ -507,9 +517,9 @@ class YaARAPlugInEntryPoint2 : public ARA::IPlugInEntryPoint2 {
         ConstructArgs() noexcept;
 
         /**
-         * Check whether an existing implementation implements
+         * Check whether an existing implementation supports
          * `ARA::IPlugInEntryPoint2` and read arguments from it.
-         * Logs a message if ARA 2.0 support is detected.
+         * Logs a detection message on the Wine side when ARA 2 capability is found.
          */
         ConstructArgs(Steinberg::IPtr<Steinberg::FUnknown> object) noexcept;
 
@@ -555,7 +565,10 @@ class YaARAPlugInEntryPoint2 : public ARA::IPlugInEntryPoint2 {
         }
     };
 
-    // ARA::IPlugInEntryPoint2 pure virtual method — not yet implemented.
+    // ARA::IPlugInEntryPoint2 pure virtual method.
+    // Overridden in `Vst3PluginProxyImpl` to forward
+    // `bindToDocumentControllerWithRoles()` across the bridge via IPC,
+    // with ARA 1 fallback to `bindToDocumentController()`.
     virtual const ARA::ARAPlugInExtensionInstance* PLUGIN_API
     bindToDocumentControllerWithRoles(
         ARA::ARADocumentControllerRef documentControllerRef,

@@ -211,7 +211,16 @@ class AraFactoryProxy {
         return active_proxy_->document_controller_instance_;
     }
 
-    static inline AraFactoryProxy* active_proxy_ = nullptr;
+    // Thread-local pointer to the currently-active AraFactoryProxy.
+    //
+    // The ARA factory callbacks (initializeARAWithConfiguration, uninitializeARA,
+    // createDocumentControllerWithDocument) are plain C function pointers with no
+    // userdata parameter, so we cannot pass `this` through the ARAFactory struct
+    // itself.  Using a thread-local is correct here because the ARA spec guarantees
+    // that all factory-level calls are made serially from a single thread (the
+    // host's main/document thread), so two different AraFactoryProxy instances
+    // can never be "active" on the same thread simultaneously.
+    static thread_local AraFactoryProxy* active_proxy_;
 
     Vst3PluginBridge& bridge_;
     native_size_t instance_id_;

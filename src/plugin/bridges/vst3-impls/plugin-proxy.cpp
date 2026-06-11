@@ -27,6 +27,10 @@
  * messages from the GUI thread. If we cannot figure out what we're connected
  * to, we'll still proxy the host's connection proxy.
  */
+// Thread-local definition for AraFactoryProxy::active_proxy_.
+// See the declaration in plugin-proxy.h for the rationale.
+thread_local AraFactoryProxy* AraFactoryProxy::active_proxy_ = nullptr;
+
 constexpr char other_instance_message_id[] = "yabridge_other_instance";
 /**
  * In the message described above we'll use this attribute to pass through a

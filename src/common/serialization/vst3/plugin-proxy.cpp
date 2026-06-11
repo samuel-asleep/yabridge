@@ -46,6 +46,7 @@ Vst3PluginProxy::ConstructArgs::ConstructArgs(
       midi_learn_args(object),
       midi_mapping_args(object),
       note_expression_controller_args(object),
+      note_expression_physical_ui_mapping_args(object),
       parameter_function_name_args(object),
       plugin_base_args(object),
       prefetchable_support_args(object),
