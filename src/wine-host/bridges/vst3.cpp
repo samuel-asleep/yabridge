@@ -979,28 +979,19 @@ void Vst3Bridge::run() {
             },
             [&](const YaARAFactory::Initialize& request)
                 -> YaARAFactory::Initialize::Response {
-                // Melodyne's initializeARAWithConfiguration() needs a large
-                // stack (its call chain overflows Wine's default ~64 KB
-                // thread stack) AND the GUI thread must be free to pump Win32
-                // messages while it runs (Wine fibers don't give the original
-                // thread stack the extra space — they still overflow).
+                // Call initializeARAWithConfiguration directly on the GUI
+                // thread — exactly as all ARA reference implementations do
+                // (TestHost/CompanionAPIs.cpp, ARAIPCProxyHost.cpp).
                 //
-                // IMPORTANT: ARAInterfaceConfiguration layout mismatch.
-                // GCC (Linux/Wine) packs the struct to 20 bytes:
-                //   offset  0: structSize          (size_t, 8 bytes)
-                //   offset  8: desiredApiGeneration (ARAAPIGeneration, 4 bytes)
-                //   offset 12: assertFunctionAddress (pointer, 8 bytes) ← GCC
-                // MSVC (Windows Melodyne) pads to 24 bytes:
-                //   offset  0: structSize          (8 bytes)
-                //   offset  8: desiredApiGeneration (4 bytes)
-                //   offset 12: padding             (4 bytes)
-                //   offset 16: assertFunctionAddress (8 bytes) ← MSVC
-                // We must use a hand-laid-out struct that matches MSVC's layout
-                // so Melodyne reads assertFunctionAddress from the right offset.
+                // The ARAInterfaceConfiguration struct uses #pragma pack(1)
+                // on x86 (both 32 and 64 bit), giving 20 bytes total:
+                //   offset  0: structSize           (size_t, 8 bytes)
+                //   offset  8: desiredApiGeneration  (4-byte enum)
+                //   offset 12: assertFunctionAddress (pointer, 8 bytes)
                 //
-                // Solution: CreateThread with STACK_SIZE_PARAM_IS_A_RESERVATION
-                // so the 32 MB is a true reservation, then pump messages on the
-                // GUI thread via MsgWaitForMultipleObjects until worker finishes.
+                // assertFunctionAddress is passed as nullptr — identical to
+                // what ARAIPCProxyHost does, since assert function pointers
+                // cannot meaningfully cross a process boundary.
                 return main_context_
                     .run_in_context([&]() -> Ack {
                         const auto& [instance, _] =
@@ -1018,134 +1009,34 @@ void Vst3Bridge::run() {
                             return Ack{};
                         }
 
-                        // Keep assert_fn alive for the lifetime of the process
-                        // (ARA spec: must stay valid until uninitializeARA).
-                        struct AssertHolder {
-                            static void WINAPI noop_assert(
-                                ARA::ARAAssertCategory,
-                                const void*,
-                                const char*) noexcept {}
-                        };
-                        static ARA::ARAAssertFunction assert_fn =
-                            reinterpret_cast<ARA::ARAAssertFunction>(
-                                &AssertHolder::noop_assert);
-
-                        // Hand-laid-out buffer matching the Windows/MSVC
-                        // ARAInterfaceConfiguration layout (24 bytes):
-                        //   [0 ] structSize            (uint64_t, 8 bytes)
-                        //   [8 ] desiredApiGeneration  (uint32_t, 4 bytes)
-                        //   [12] padding               (uint32_t, 4 bytes)
-                        //   [16] assertFunctionAddress (uint64_t, 8 bytes)
-                        // This ensures Melodyne reads the pointer from offset 16
-                        // regardless of the GCC struct layout on the Wine side.
-                        const ARA::ARAInterfaceConfiguration* config_ptr =
-                            nullptr;
-                        alignas(8) uint8_t config_buf[24]{};
                         if (request.config.has_config) {
-                            // structSize = 24 (kARAInterfaceConfigurationMinSize
-                            // under MSVC layout)
-                            const uint64_t struct_size = 24;
-                            const uint32_t api_gen = static_cast<uint32_t>(
-                                request.config.desired_api_generation);
-                            // assertFunctionAddress value (the address of
-                            // assert_fn, which is itself a function pointer)
-                            const uint64_t assert_addr =
-                                reinterpret_cast<uint64_t>(&assert_fn);
-                            std::memcpy(config_buf + 0,  &struct_size, 8);
-                            std::memcpy(config_buf + 8,  &api_gen,     4);
-                            // bytes 12..15 = zero padding
-                            std::memcpy(config_buf + 16, &assert_addr, 8);
-                            config_ptr =
-                                reinterpret_cast<
-                                    const ARA::ARAInterfaceConfiguration*>(
-                                    config_buf);
+                            // Use SizedStruct so structSize is set correctly
+                            // using the same pack(1) layout as the SDK.
+                            ARA::SizedStruct<
+                                &ARA::ARAInterfaceConfiguration::
+                                    assertFunctionAddress>
+                                config{
+                                    request.config.desired_api_generation,
+                                    nullptr};
+                            logger_.log(
+                                "NOTE: ARA initializeARAWithConfiguration: "
+                                "calling directly on GUI thread "
+                                "(desiredApiGeneration=" +
+                                std::to_string(static_cast<int>(
+                                    request.config
+                                        .desired_api_generation)) +
+                                ", assertFunctionAddress=nullptr)");
+                            factory->initializeARAWithConfiguration(&config);
+                        } else {
+                            logger_.log(
+                                "NOTE: ARA initializeARAWithConfiguration: "
+                                "calling directly on GUI thread (no config)");
+                            factory->initializeARAWithConfiguration(nullptr);
                         }
 
                         logger_.log(
                             "NOTE: ARA initializeARAWithConfiguration: "
-                            "spawning 32 MB worker thread + GUI message pump "
-                            "(MSVC-layout config buf, structSize=24)");
-
-                        // Force-create a message queue on the GUI thread
-                        // before spawning the worker so MsgWaitForMultipleObjects
-                        // works correctly.
-                        {
-                            MSG dummy;
-                            PeekMessageW(&dummy, nullptr, 0, 0, PM_NOREMOVE);
-                        }
-
-                        struct WorkCtx {
-                            const ARA::ARAFactory* factory;
-                            const ARA::ARAInterfaceConfiguration* config_ptr;
-                            Vst3Logger* logger;
-                        } work_ctx{factory, config_ptr, &logger_};
-
-                        auto work_fn = fu2::unique_function<void()>(
-                            [&work_ctx]() {
-                                OleInitialize(nullptr);
-                                work_ctx.logger->log(
-                                    "NOTE: ARA initializeARAWithConfiguration: "
-                                    "worker thread: calling "
-                                    "initializeARAWithConfiguration");
-                                work_ctx.factory
-                                    ->initializeARAWithConfiguration(
-                                        work_ctx.config_ptr);
-                                work_ctx.logger->log(
-                                    "NOTE: ARA initializeARAWithConfiguration: "
-                                    "worker thread: returned");
-                                OleUninitialize();
-                            });
-
-                        // Pre-allocate so we can delete on CreateThread failure.
-                        auto* work_fn_ptr =
-                            new fu2::unique_function<void()>(
-                                std::move(work_fn));
-
-                        // STACK_SIZE_PARAM_IS_A_RESERVATION ensures Wine
-                        // reserves + commits the full 32 MB stack rather than
-                        // growing it lazily from a tiny guard page.
-                        constexpr SIZE_T stack_size = 32 * 1024 * 1024;
-                        HANDLE thread_handle = CreateThread(
-                            nullptr,
-                            stack_size,
-                            reinterpret_cast<LPTHREAD_START_ROUTINE>(
-                                win32_thread_trampoline),
-                            work_fn_ptr,
-                            STACK_SIZE_PARAM_IS_A_RESERVATION,
-                            nullptr);
-
-                        if (thread_handle) {
-                            // Pump the GUI message queue while the worker runs
-                            // so that any SendMessage / PostMessage from
-                            // Melodyne's init path is dispatched immediately.
-                            DWORD wr;
-                            do {
-                                wr = MsgWaitForMultipleObjects(
-                                    1, &thread_handle, FALSE, INFINITE,
-                                    QS_ALLINPUT);
-                                if (wr == WAIT_OBJECT_0 + 1) {
-                                    MSG msg;
-                                    while (PeekMessageW(&msg, nullptr, 0, 0,
-                                                        PM_REMOVE)) {
-                                        TranslateMessage(&msg);
-                                        DispatchMessageW(&msg);
-                                    }
-                                }
-                            } while (wr != WAIT_OBJECT_0 &&
-                                     wr != WAIT_FAILED);
-                            CloseHandle(thread_handle);
-                            logger_.log(
-                                "NOTE: ARA initializeARAWithConfiguration: "
-                                "worker thread finished");
-                        } else {
-                            logger_.log(
-                                "WARNING: ARA initializeARAWithConfiguration: "
-                                "CreateThread failed — falling back to direct "
-                                "call (may stack-overflow)");
-                            delete work_fn_ptr;
-                            factory->initializeARAWithConfiguration(config_ptr);
-                        }
-
+                            "returned");
                         return Ack{};
                     })
                     .get();
