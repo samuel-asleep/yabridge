@@ -979,75 +979,99 @@ void Vst3Bridge::run() {
             },
             [&](const YaARAFactory::Initialize& request)
                 -> YaARAFactory::Initialize::Response {
-                // Call initializeARAWithConfiguration directly on the GUI
-                // thread — exactly as all ARA reference implementations do
-                // (TestHost/CompanionAPIs.cpp, ARAIPCProxyHost.cpp).
+                // initializeARAWithConfiguration() requires a large stack:
+                // Melodyne's call chain overflows Wine's default 1 MB GUI
+                // thread stack. We spawn a dedicated CreateThread with a
+                // 32 MB reserved stack and wait for it to complete via
+                // WaitForSingleObject — no message pump is needed because
+                // initializeARAWithConfiguration() does not call back into
+                // the host.
                 //
-                // The ARAInterfaceConfiguration struct uses #pragma pack(1)
-                // on x86 (both 32 and 64 bit), giving 20 bytes total:
+                // The struct uses #pragma pack(1) on x86 (both 32 and 64
+                // bit), giving 20 bytes:
                 //   offset  0: structSize           (size_t, 8 bytes)
                 //   offset  8: desiredApiGeneration  (4-byte enum)
                 //   offset 12: assertFunctionAddress (pointer, 8 bytes)
-                //
-                // assertFunctionAddress is passed as nullptr — identical to
-                // what ARAIPCProxyHost does, since assert function pointers
-                // cannot meaningfully cross a process boundary.
-                return main_context_
-                    .run_in_context([&]() -> Ack {
-                        const auto& [instance, _] =
-                            get_instance(request.instance_id);
-                        Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                            entry_point(instance.object);
-                        if (!entry_point) {
-                            return Ack{};
-                        }
+                // assertFunctionAddress = nullptr (function pointers cannot
+                // cross process boundaries, as the ARA IPC proxy does).
+                struct InitCtx {
+                    const ARA::ARAFactory* factory;
+                    ARA::ARAInterfaceConfiguration config;
+                    bool has_config;
+                    Vst3Logger* logger;
+                };
 
-                        const ARA::ARAFactory* factory =
-                            entry_point->getFactory();
-                        if (!factory ||
-                            !factory->initializeARAWithConfiguration) {
-                            return Ack{};
-                        }
+                // Build the config on the IPC handler thread; it will be
+                // read by the worker thread which outlives this scope only
+                // via WaitForSingleObject ensuring the stack frame stays alive.
+                const auto& [instance, _] =
+                    get_instance(request.instance_id);
+                Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
+                    entry_point(instance.object);
+                if (!entry_point) {
+                    return Ack{};
+                }
+                const ARA::ARAFactory* factory = entry_point->getFactory();
+                if (!factory || !factory->initializeARAWithConfiguration) {
+                    return Ack{};
+                }
 
-                        if (request.config.has_config) {
-                            // Build ARAInterfaceConfiguration directly.
-                            // The struct uses #pragma pack(1) on x86 (both
-                            // 32 and 64 bit), giving layout:
-                            //   offset  0: structSize           (size_t)
-                            //   offset  8: desiredApiGeneration (4-byte enum)
-                            //   offset 12: assertFunctionAddress (pointer)
-                            //   total: 20 bytes = kARAInterfaceConfigurationMinSize
-                            // assertFunctionAddress is nullptr — identical to
-                            // ARAIPCProxyHost, since function pointers cannot
-                            // cross a process boundary.
-                            ARA::ARAInterfaceConfiguration config{};
-                            config.structSize = static_cast<ARA::ARASize>(
-                                ARA::kARAInterfaceConfigurationMinSize);
-                            config.desiredApiGeneration =
-                                request.config.desired_api_generation;
-                            config.assertFunctionAddress = nullptr;
-                            logger_.log(
-                                "NOTE: ARA initializeARAWithConfiguration: "
-                                "calling directly on GUI thread "
-                                "(desiredApiGeneration=" +
-                                std::to_string(static_cast<int>(
-                                    request.config
-                                        .desired_api_generation)) +
-                                ", assertFunctionAddress=nullptr)");
-                            factory->initializeARAWithConfiguration(&config);
-                        } else {
-                            logger_.log(
-                                "NOTE: ARA initializeARAWithConfiguration: "
-                                "calling directly on GUI thread (no config)");
-                            factory->initializeARAWithConfiguration(nullptr);
-                        }
+                ARA::ARAInterfaceConfiguration config{};
+                if (request.config.has_config) {
+                    config.structSize = static_cast<ARA::ARASize>(
+                        ARA::kARAInterfaceConfigurationMinSize);
+                    config.desiredApiGeneration =
+                        request.config.desired_api_generation;
+                    config.assertFunctionAddress = nullptr;
+                }
 
-                        logger_.log(
-                            "NOTE: ARA initializeARAWithConfiguration: "
-                            "returned");
-                        return Ack{};
-                    })
-                    .get();
+                InitCtx ctx{factory, config,
+                            request.config.has_config, &logger_};
+
+                auto work_fn = fu2::unique_function<void()>([&ctx]() {
+                    OleInitialize(nullptr);
+                    ctx.logger->log(
+                        "NOTE: ARA initializeARAWithConfiguration: "
+                        "worker thread calling (desiredApiGeneration=" +
+                        std::to_string(static_cast<int>(
+                            ctx.config.desiredApiGeneration)) +
+                        ")");
+                    ctx.factory->initializeARAWithConfiguration(
+                        ctx.has_config ? &ctx.config : nullptr);
+                    ctx.logger->log(
+                        "NOTE: ARA initializeARAWithConfiguration: "
+                        "worker thread returned");
+                    OleUninitialize();
+                });
+
+                auto* work_fn_ptr =
+                    new fu2::unique_function<void()>(std::move(work_fn));
+
+                constexpr SIZE_T stack_size = 32 * 1024 * 1024;
+                HANDLE thread_handle = CreateThread(
+                    nullptr, stack_size,
+                    reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                        win32_thread_trampoline),
+                    work_fn_ptr,
+                    STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+
+                if (thread_handle) {
+                    WaitForSingleObject(thread_handle, INFINITE);
+                    CloseHandle(thread_handle);
+                    logger_.log(
+                        "NOTE: ARA initializeARAWithConfiguration: "
+                        "worker thread finished");
+                } else {
+                    logger_.log(
+                        "WARNING: ARA initializeARAWithConfiguration: "
+                        "CreateThread failed, calling directly "
+                        "(may stack-overflow)");
+                    delete work_fn_ptr;
+                    factory->initializeARAWithConfiguration(
+                        request.config.has_config ? &config : nullptr);
+                }
+
+                return Ack{};
             },
             [&](const YaARAFactory::Uninitialize& request)
                 -> YaARAFactory::Uninitialize::Response {
