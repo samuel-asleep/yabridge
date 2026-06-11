@@ -505,7 +505,7 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     auto* factory = proxy_object.ara_factory_proxy();
                     if (!factory || !factory->linux_host_instance_) {
                         return YaARAHostCallbacks::ReadBytesFromArchive::Response{
-                            .ok = ARA::kARAFalse};
+                            .ok = ARA::kARAFalse, .buffer = {}};
                     }
 
                     const auto* hi = factory->linux_host_instance_;
@@ -513,7 +513,7 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                         !hi->archivingControllerInterface
                              ->readBytesFromArchive) {
                         return YaARAHostCallbacks::ReadBytesFromArchive::Response{
-                            .ok = ARA::kARAFalse};
+                            .ok = ARA::kARAFalse, .buffer = {}};
                     }
 
                     std::vector<uint8_t> buffer(

@@ -1010,14 +1010,22 @@ void Vst3Bridge::run() {
                         }
 
                         if (request.config.has_config) {
-                            // Use SizedStruct so structSize is set correctly
-                            // using the same pack(1) layout as the SDK.
-                            ARA::SizedStruct<
-                                &ARA::ARAInterfaceConfiguration::
-                                    assertFunctionAddress>
-                                config{
-                                    request.config.desired_api_generation,
-                                    nullptr};
+                            // Build ARAInterfaceConfiguration directly.
+                            // The struct uses #pragma pack(1) on x86 (both
+                            // 32 and 64 bit), giving layout:
+                            //   offset  0: structSize           (size_t)
+                            //   offset  8: desiredApiGeneration (4-byte enum)
+                            //   offset 12: assertFunctionAddress (pointer)
+                            //   total: 20 bytes = kARAInterfaceConfigurationMinSize
+                            // assertFunctionAddress is nullptr — identical to
+                            // ARAIPCProxyHost, since function pointers cannot
+                            // cross a process boundary.
+                            ARA::ARAInterfaceConfiguration config{};
+                            config.structSize = static_cast<ARA::ARASize>(
+                                ARA::kARAInterfaceConfigurationMinSize);
+                            config.desiredApiGeneration =
+                                request.config.desired_api_generation;
+                            config.assertFunctionAddress = nullptr;
                             logger_.log(
                                 "NOTE: ARA initializeARAWithConfiguration: "
                                 "calling directly on GUI thread "

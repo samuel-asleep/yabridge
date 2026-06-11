@@ -160,6 +160,10 @@ struct WineARADocumentControllerHostInstance {
         return &host_instance_;
     }
 
+    // Back-reference used by the static stub functions to reach the bridge.
+    size_t instance_id_ = 0;
+    Vst3Bridge* bridge_ = nullptr;
+
     // -----------------------------------------------------------------------
     // Opaque Linux-side host refs captured from the original host instance.
     // These are passed back in every IPC callback so Carla can route them to
@@ -195,10 +199,6 @@ struct WineARADocumentControllerHostInstance {
     // Points into the tables above — must not be moved after construction.
     // -----------------------------------------------------------------------
     ARA::ARADocumentControllerHostInstance host_instance_{};
-
-    // Back-reference used by the static stub functions to reach the bridge.
-    size_t instance_id_ = 0;
-    Vst3Bridge* bridge_ = nullptr;
 
    private:
     /**
