@@ -61,13 +61,13 @@ if is_64bit_system
     ara_ipc_host_sources,
     native : false,
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    cpp_args : ara_sdk_compile_args + wine_64bit_compiler_options,
+    cpp_args : ara_sdk_compile_args + wine_64bit_compiler_options + ['-U__i386__'],
     override_options : ['warning_level=0'],
   )
   ara_ipc_wine_64bit_dep = declare_dependency(
     link_with : ara_ipc_wine_64bit,
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    compile_args : ara_sdk_compile_args,
+    compile_args : ara_sdk_compile_args + ['-U__i386__'],
   )
 endif
 

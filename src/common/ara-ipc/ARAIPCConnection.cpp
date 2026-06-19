@@ -234,8 +234,9 @@ std::unique_ptr<MessageEncoder> MessageDispatcher::_handleReceivedMessage (Messa
 
 // helper for MainThreadMessageDispatcher: single-object message queue with semaphore to wait on
 // Wine: std::binary_semaphore's try_acquire_for hangs (broken futex mapping).
-// Use POSIX sem_t with sem_timedwait instead.
-#if defined (__WINE__)
+// Linux (native and Wine): Use POSIX sem_t with sem_timedwait instead.
+// This also covers compilers where __cplusplus < 202002L (c++2a on GCC 10).
+#if defined (__WINE__) || (defined (__linux__) && !defined (__APPLE__))
 #include <semaphore.h>
 #include <time.h>
 class WaitableSingleMessageQueue
@@ -356,7 +357,7 @@ class WaitableSingleMessageQueue
         std::atomic<const MessageDecoder*> _pendingMessageDecoder { nullptr };
         void* const _waitForMessageSemaphore;   // concrete type is platform-dependent
 };
-#endif // !defined(__WINE__) — close the #else block for the original WaitableSingleMessageQueue
+#endif // !defined(__WINE__) && !(defined(__linux__) && !defined(__APPLE__)) — close the #else block for the original WaitableSingleMessageQueue
 
 //------------------------------------------------------------------------------
 
