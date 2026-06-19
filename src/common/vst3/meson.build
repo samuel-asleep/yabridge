@@ -20,22 +20,33 @@ ara_ipc_own_inc = include_directories('../../common/ara-ipc', is_system : true)
 
 ara_sdk_compile_args = ['-DARA_ENABLE_IPC=1']
 
-# Source files for the Linux (host/plugin native) side: Connection + ProxyPlugIn
-# Use plain strings (not files()) to avoid the Meson subproject sandbox check.
-ara_ipc_plugin_sources = [
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCConnection.cpp',
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCProxyPlugIn.cpp',
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAHostDispatch.cpp',
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAPlugInDispatch.cpp',
+# The copied .cpp files include their sibling .h files via bare names
+# (e.g. #include "ARAIPCConnection.h").  Add the original SDK header dirs
+# as -isystem flags — this bypasses Meson's include_directories() sandbox
+# while still making the headers available to the compiler.
+_sdk = meson.project_source_root() / 'subprojects' / 'ara-sdk' / 'ARA_Library'
+ara_ipc_sdk_args = ara_sdk_compile_args + [
+  '-isystem' + _sdk / 'IPC',
+  '-isystem' + _sdk / 'Dispatch',
 ]
 
+# Source files for the Linux (host/plugin native) side: Connection + ProxyPlugIn
+# All files are in src/common/ara-ipc/ (yabridge's own source tree) so there
+# is no Meson subproject sandbox issue.
+ara_ipc_plugin_sources = files(
+  '../../common/ara-ipc/ARAIPCConnection.cpp',
+  '../../common/ara-ipc/ARAIPCProxyPlugIn.cpp',
+  '../../common/ara-ipc/ARAHostDispatch.cpp',
+  '../../common/ara-ipc/ARAPlugInDispatch.cpp',
+)
+
 # Source files for the Wine host side: Connection + ProxyHost
-ara_ipc_host_sources = [
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCConnection.cpp',
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCProxyHost.cpp',
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAHostDispatch.cpp',
-  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAPlugInDispatch.cpp',
-]
+ara_ipc_host_sources = files(
+  '../../common/ara-ipc/ARAIPCConnection.cpp',
+  '../../common/ara-ipc/ARAIPCProxyHost.cpp',
+  '../../common/ara-ipc/ARAHostDispatch.cpp',
+  '../../common/ara-ipc/ARAPlugInDispatch.cpp',
+)
 
 # Native (Linux) ARA IPC static library — linked into libyabridge-vst3.so
 ara_ipc_native = static_library(
@@ -43,7 +54,7 @@ ara_ipc_native = static_library(
   ara_ipc_plugin_sources,
   native : true,
   include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-  cpp_args : ara_sdk_compile_args,
+  cpp_args : ara_ipc_sdk_args,
   override_options : ['warning_level=0'],
 )
 
@@ -60,7 +71,7 @@ if is_64bit_system
     ara_ipc_host_sources,
     native : false,
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    cpp_args : ara_sdk_compile_args + wine_64bit_compiler_options,
+    cpp_args : ara_ipc_sdk_args + wine_64bit_compiler_options,
     override_options : ['warning_level=0'],
   )
   ara_ipc_wine_64bit_dep = declare_dependency(
@@ -76,7 +87,7 @@ if with_bitbridge
     ara_ipc_host_sources,
     native : false,
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    cpp_args : ara_sdk_compile_args + wine_32bit_compiler_options,
+    cpp_args : ara_ipc_sdk_args + wine_32bit_compiler_options,
     override_options : ['warning_level=0'],
   )
   ara_ipc_wine_32bit_dep = declare_dependency(
