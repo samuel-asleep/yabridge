@@ -26,7 +26,7 @@
 
 
 #if defined (_WIN32) && !defined (__WINE__)
-    #include <Windows.h>
+    #include <windows.h>
 #elif defined (__APPLE__)
     #include <CoreFoundation/CFRunLoop.h>
 #endif

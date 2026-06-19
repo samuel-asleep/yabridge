@@ -11,7 +11,7 @@
 #pragma once
 
 #define ARA_ENABLE_IPC 1
-#include "ARA_Library/IPC/ARAIPCConnection.h"
+#include "ARAIPCConnection.h"
 // SocketEncoder.h lives in the same directory in yabridge's source tree.
 #include "SocketEncoder.h"
 

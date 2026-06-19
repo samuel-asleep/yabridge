@@ -32,8 +32,9 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #pragma GCC diagnostic ignored "-Wundef"
-#include "ARA_Library/IPC/ARAIPCProxyPlugIn.h"
-#include "ARA_Library/IPC/ARAIPCConnection.h"
+// Use local patched copies of the ARA IPC headers to avoid platform issues
+#include "ARAIPCProxyPlugIn.h"
+#include "ARAIPCConnection.h"
 #pragma GCC diagnostic pop
 
 // SocketChannel and SocketEncoder are copied into yabridge's source tree at
@@ -166,6 +167,12 @@ class AraFactoryProxy {
      */
     void setup_ipc(const ghc::filesystem::path& base_dir,
                    const std::string& factory_id);
+
+    /**
+     * Returns true if the ARA SDK IPC ProxyPlugIn has been set up.
+     * Used by getFactory() to avoid calling setup_ipc() more than once.
+     */
+    bool has_ipc() const noexcept { return proxy_plug_in_ != nullptr; }
 
    private:
     static void ARA_CALL

@@ -20,10 +20,11 @@
 #define ARAIPCProxyPlugIn_h
 
 #if defined(__cplusplus)
-#include "ARA_Library/IPC/ARAIPCConnection.h"
-#include "ARA_Library/IPC/ARAIPCEncoding.h"
+// Use the local patched copy of ARAIPCConnection.h to avoid Windows.h issues
+#include "ARAIPCConnection.h"
+#include "ARAIPCEncoding.h"
 #else
-#include "ARA_Library/IPC/ARAIPC.h"
+#include "ARAIPC.h"
 #endif
 
 

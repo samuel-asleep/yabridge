@@ -237,7 +237,7 @@ const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
     // ProxyPlugIn on our side.  This wires all ARAFactory function calls
     // (initialize, createDocumentController, etc.) through the ARA SDK
     // IPC transport instead of individual bitsery messages.
-    if (response.has_ara_ipc && !ara_factory_proxy_->proxy_plug_in_) {
+    if (response.has_ara_ipc && !ara_factory_proxy_->has_ipc()) {
         ara_factory_proxy_->setup_ipc(
             bridge_.socket_base_dir(),
             response.factory.factory_id);

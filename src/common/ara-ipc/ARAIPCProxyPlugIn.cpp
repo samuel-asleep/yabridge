@@ -21,7 +21,7 @@
 
 #if ARA_ENABLE_IPC
 
-#include "ARA_Library/IPC/ARAIPCEncoding.h"
+#include "ARAIPCEncoding.h"
 #include "ARA_Library/Dispatch/ARAPlugInDispatch.h"
 #include "ARA_Library/Dispatch/ARAHostDispatch.h"
 

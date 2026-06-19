@@ -23,7 +23,7 @@
 
 
 #include "ARA_Library/Debug/ARADebug.h"
-#include "ARA_Library/IPC/ARAIPCEncoding.h"
+#include "ARAIPCEncoding.h"
 
 #include <utility>
 #include <optional>

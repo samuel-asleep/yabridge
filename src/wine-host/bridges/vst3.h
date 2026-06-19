@@ -40,8 +40,9 @@
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #pragma GCC diagnostic ignored "-Wundef"
-#include "ARA_Library/IPC/ARAIPCProxyHost.h"
-#include "ARA_Library/IPC/ARAIPCConnection.h"
+// Use local patched copies of the ARA IPC headers to avoid Windows.h issues
+#include "../../common/ara-ipc/ARAIPCProxyHost.h"
+#include "../../common/ara-ipc/ARAIPCConnection.h"
 #include "../../common/ara-ipc/SocketChannel.h"
 #include "../../common/ara-ipc/SocketEncoder.h"
 #pragma GCC diagnostic pop
