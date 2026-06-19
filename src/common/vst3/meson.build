@@ -5,33 +5,31 @@
 vst3 = subproject('vst3', version : '3.7.7')
 
 # The ARA SDK is a git submodule at subprojects/ara-sdk/.  We build the
-# ARA IPC static libraries directly here, using absolute source paths
-# constructed from the project source root to avoid Meson subproject sandbox
-# restrictions on files() objects.  The include_directories() sandbox
-# violation warnings are harmless and suppressed by is_system:true.
-ara_sdk_root = meson.project_source_root() / 'subprojects' / 'ara-sdk'
-
-ara_sdk_inc = include_directories(
-  ara_sdk_root,
-  ara_sdk_root / 'ARA_Library',
-  is_system : true)
+# ARA IPC static libraries here using the existing relative include path.
+#
+# Note: the include_directories() call will emit a sandbox violation warning
+# because it points outside this subdirectory, but it functions correctly
+# and is suppressed from yabridge's own warnings by is_system:true.
+# This matches the pre-existing ara_sdk_inc usage in this file.
+ara_sdk_inc = include_directories('../../../subprojects/ara-sdk', is_system : true)
 
 ara_sdk_compile_args = ['-DARA_ENABLE_IPC=1']
 
 # Source files for the Linux (host/plugin native) side: Connection + ProxyPlugIn
+# Use plain strings (not files()) to avoid the Meson subproject sandbox check.
 ara_ipc_plugin_sources = [
-  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCConnection.cpp',
-  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCProxyPlugIn.cpp',
-  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAHostDispatch.cpp',
-  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAPlugInDispatch.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCConnection.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCProxyPlugIn.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAHostDispatch.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAPlugInDispatch.cpp',
 ]
 
 # Source files for the Wine host side: Connection + ProxyHost
 ara_ipc_host_sources = [
-  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCConnection.cpp',
-  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCProxyHost.cpp',
-  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAHostDispatch.cpp',
-  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAPlugInDispatch.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCConnection.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCProxyHost.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAHostDispatch.cpp',
+  meson.current_source_dir() + '/../../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAPlugInDispatch.cpp',
 ]
 
 # Native (Linux) ARA IPC static library — linked into libyabridge-vst3.so
