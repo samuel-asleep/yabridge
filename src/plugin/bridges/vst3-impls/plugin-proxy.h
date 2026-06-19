@@ -36,15 +36,16 @@
 #include "ARA_Library/IPC/ARAIPCConnection.h"
 #pragma GCC diagnostic pop
 
-// SocketChannel and SocketEncoder live in the ARA SDK test directory.
-// We include them here (header-only) for the Linux side just as the test
-// programme does.
+// SocketChannel and SocketEncoder are copied into yabridge's source tree at
+// src/common/ara-ipc/ so they are always available (the upstream submodule's
+// test/ directory is not tracked by the parent repo).
+// The ara-ipc/ directory is on the include path via ara_ipc_{native,wine}_dep.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wold-style-cast"
-#include "ARA_Library/test/SocketChannel.h"
-#include "ARA_Library/test/SocketEncoder.h"
+#include "SocketChannel.h"
+#include "SocketEncoder.h"
 #pragma GCC diagnostic pop
 
 class AraPlugInExtensionProxy;

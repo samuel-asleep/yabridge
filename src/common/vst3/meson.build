@@ -13,6 +13,11 @@ vst3 = subproject('vst3', version : '3.7.7')
 # This matches the pre-existing ara_sdk_inc usage in this file.
 ara_sdk_inc = include_directories('../../../subprojects/ara-sdk', is_system : true)
 
+# Also add yabridge's own ARA IPC transport headers (SocketChannel/SocketEncoder)
+# to the include path.  These are in src/common/ara-ipc/ and tracked by the
+# parent repo so they are always available.
+ara_ipc_own_inc = include_directories('../../common/ara-ipc', is_system : true)
+
 ara_sdk_compile_args = ['-DARA_ENABLE_IPC=1']
 
 # Source files for the Linux (host/plugin native) side: Connection + ProxyPlugIn
@@ -37,14 +42,14 @@ ara_ipc_native = static_library(
   'ara_ipc_native',
   ara_ipc_plugin_sources,
   native : true,
-  include_directories : ara_sdk_inc,
+  include_directories : [ara_sdk_inc, ara_ipc_own_inc],
   cpp_args : ara_sdk_compile_args,
   override_options : ['warning_level=0'],
 )
 
 ara_ipc_native_dep = declare_dependency(
   link_with : ara_ipc_native,
-  include_directories : ara_sdk_inc,
+  include_directories : [ara_sdk_inc, ara_ipc_own_inc],
   compile_args : ara_sdk_compile_args,
 )
 
@@ -54,13 +59,13 @@ if is_64bit_system
     'ara_ipc_wine_64bit',
     ara_ipc_host_sources,
     native : false,
-    include_directories : ara_sdk_inc,
+    include_directories : [ara_sdk_inc, ara_ipc_own_inc],
     cpp_args : ara_sdk_compile_args + wine_64bit_compiler_options,
     override_options : ['warning_level=0'],
   )
   ara_ipc_wine_64bit_dep = declare_dependency(
     link_with : ara_ipc_wine_64bit,
-    include_directories : ara_sdk_inc,
+    include_directories : [ara_sdk_inc, ara_ipc_own_inc],
     compile_args : ara_sdk_compile_args,
   )
 endif
@@ -70,13 +75,13 @@ if with_bitbridge
     'ara_ipc_wine_32bit',
     ara_ipc_host_sources,
     native : false,
-    include_directories : ara_sdk_inc,
+    include_directories : [ara_sdk_inc, ara_ipc_own_inc],
     cpp_args : ara_sdk_compile_args + wine_32bit_compiler_options,
     override_options : ['warning_level=0'],
   )
   ara_ipc_wine_32bit_dep = declare_dependency(
     link_with : ara_ipc_wine_32bit,
-    include_directories : ara_sdk_inc,
+    include_directories : [ara_sdk_inc, ara_ipc_own_inc],
     compile_args : ara_sdk_compile_args,
   )
 endif

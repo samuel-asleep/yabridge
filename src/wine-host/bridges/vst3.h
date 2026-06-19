@@ -39,8 +39,8 @@
 #pragma GCC diagnostic ignored "-Wundef"
 #include "ARA_Library/IPC/ARAIPCProxyHost.h"
 #include "ARA_Library/IPC/ARAIPCConnection.h"
-#include "ARA_Library/test/SocketChannel.h"
-#include "ARA_Library/test/SocketEncoder.h"
+#include "../../common/ara-ipc/SocketChannel.h"
+#include "../../common/ara-ipc/SocketEncoder.h"
 #pragma GCC diagnostic pop
 
 // Forward declarations
