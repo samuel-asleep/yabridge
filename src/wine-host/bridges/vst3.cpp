@@ -505,6 +505,7 @@ void Vst3Bridge::run() {
                 response.supported = true;
                 response.factory = YaARAFactorySnapshot(factory);
 
+#if !defined(YABRIDGE_DISABLE_ARA_IPC)
                 // If the ARA IPC ProxyHost hasn't been set up for this
                 // instance yet, create it now.  We listen on two named
                 // sockets (main-thread and other-threads channels) and
@@ -793,6 +794,7 @@ void Vst3Bridge::run() {
                     // ProxyHost already set up from a prior GetFactory call.
                     response.has_ara_ipc = true;
                 }
+#endif // !YABRIDGE_DISABLE_ARA_IPC
 
                 return response;
             },
@@ -1564,6 +1566,7 @@ void Vst3Bridge::run() {
             },
             [&](const Vst3PluginProxy::Destruct& request)
                 -> Vst3PluginProxy::Destruct::Response {
+#if !defined(YABRIDGE_DISABLE_ARA_IPC)
                 // Signal the ARA IPC dispatch thread to stop before
                 // tearing down the instance (which destroys ara_proxy_host
                 // and the Connection owned by it).
@@ -1575,6 +1578,7 @@ void Vst3Bridge::run() {
                             true, std::memory_order_release);
                     }
                 }
+#endif
                 unregister_object_instance(request.instance_id);
 
                 return Ack{};

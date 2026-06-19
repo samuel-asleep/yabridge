@@ -30,7 +30,10 @@
 #include "../editor.h"
 #include "common.h"
 
-// ARA SDK IPC layer — only compiled when VST3 is enabled.
+// ARA SDK IPC layer — only compiled for 64-bit targets.
+// The encoding table in ARAIPCEncoding.h assumes 64-bit vtable pointer
+// layout, which is incompatible with 32-bit builds.
+#if !defined(YABRIDGE_DISABLE_ARA_IPC)
 #define ARA_ENABLE_IPC 1
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
@@ -42,6 +45,7 @@
 #include "../../common/ara-ipc/SocketChannel.h"
 #include "../../common/ara-ipc/SocketEncoder.h"
 #pragma GCC diagnostic pop
+#endif // !YABRIDGE_DISABLE_ARA_IPC
 
 // Forward declarations
 class Vst3ContextMenuProxyImpl;
@@ -405,14 +409,18 @@ struct Vst3PluginInstance {
      * it through the abstract `ARA::IPC::ProxyHost` base so this header does
      * not need to define the concrete subclass.
      */
+#if !defined(YABRIDGE_DISABLE_ARA_IPC)
     std::unique_ptr<ARA::IPC::ProxyHost> ara_proxy_host;
+#endif
 
     /**
      * Stop flag for the ARA IPC dispatch Win32 thread.  Set to true when
      * the plugin instance is destroyed so the thread exits its
      * `processPendingMessageOnCreationThreadIfNeeded` loop cleanly.
      */
+#if !defined(YABRIDGE_DISABLE_ARA_IPC)
     std::shared_ptr<std::atomic<bool>> ara_ipc_stop_flag;
+#endif
 
     /**
      * This contains smart pointers to all VST3 plugin interfaces that can be

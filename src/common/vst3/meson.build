@@ -72,18 +72,13 @@ if is_64bit_system
 endif
 
 if with_bitbridge
-  ara_ipc_wine_32bit = static_library(
-    'ara_ipc_wine_32bit',
-    ara_ipc_host_sources,
-    native : false,
-    include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    cpp_args : ara_sdk_compile_args + wine_32bit_compiler_options,
-    override_options : ['warning_level=0'],
-  )
+  # The ARA SDK IPC encoding layer uses vtable offsets that assume 64-bit
+  # pointer layout.  32-bit Wine builds disable the ARA IPC layer entirely
+  # via YABRIDGE_DISABLE_ARA_IPC; the include dirs are still exposed so
+  # the headers compile (they're guarded by the macro).
   ara_ipc_wine_32bit_dep = declare_dependency(
-    link_with : ara_ipc_wine_32bit,
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    compile_args : ara_sdk_compile_args,
+    compile_args : ara_sdk_compile_args + ['-DYABRIDGE_DISABLE_ARA_IPC'],
   )
 endif
 
