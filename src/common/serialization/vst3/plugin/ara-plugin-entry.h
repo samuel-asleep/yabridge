@@ -446,10 +446,21 @@ class YaARAPlugInEntryPoint : public ARA::IPlugInEntryPoint {
         bool supported = false;
         YaARAFactorySnapshot factory;
 
+        /**
+         * When `supported` is true, this flag indicates that the Wine host has
+         * set up a pair of ARA IPC sockets and is waiting for the Linux side to
+         * connect. The socket paths are
+         * `{base_dir}/ara_ipc_main.sock` and
+         * `{base_dir}/ara_ipc_other.sock`, derivable from both sides via
+         * `sockets_.base_dir_`.
+         */
+        bool has_ara_ipc = false;
+
         template <typename S>
         void serialize(S& s) {
             s.value1b(supported);
             s.object(factory);
+            s.value1b(has_ara_ipc);
         }
     };
 

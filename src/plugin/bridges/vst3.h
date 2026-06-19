@@ -196,6 +196,15 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      */
     Vst3Logger logger_;
 
+    /**
+     * Return the base directory used for all socket endpoints.  Exposed so
+     * that AraFactoryProxy::setup_ipc() can construct the ARA IPC socket
+     * paths without needing direct access to sockets_.
+     */
+    const ghc::filesystem::path& socket_base_dir() const noexcept {
+        return sockets_.base_dir_;
+    }
+
    private:
     /**
      * Handles callbacks from the plugin to the host over the

@@ -159,5 +159,10 @@ if with_vst3
     'bridges/vst3-impls/host-context-proxy.cpp',
     'bridges/vst3-impls/plug-frame-proxy.cpp',
     'bridges/vst3.cpp',
+    # ARA SDK IPC library — Wine host side needs Connection + ProxyHost
+    '../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCConnection.cpp',
+    '../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCProxyHost.cpp',
+    '../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAHostDispatch.cpp',
+    '../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAPlugInDispatch.cpp',
   )
 endif

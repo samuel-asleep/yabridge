@@ -21,6 +21,13 @@
 #include <future>
 #include <memory>
 
+// ASIO must be included via use-linux-asio.h first in Wine builds
+#include "../use-linux-asio.h"
+#include <asio/local/stream_protocol.hpp>
+#include <asio/io_context.hpp>
+
+// vst3.h already includes all ARA IPC headers with ARA_ENABLE_IPC=1.
+
 #include "vst3-impls/component-handler-proxy.h"
 #include "vst3-impls/connection-point-proxy.h"
 #include "vst3-impls/context-menu-proxy.h"
@@ -497,6 +504,296 @@ void Vst3Bridge::run() {
 
                 response.supported = true;
                 response.factory = YaARAFactorySnapshot(factory);
+
+                // If the ARA IPC ProxyHost hasn't been set up for this
+                // instance yet, create it now.  We listen on two named
+                // sockets (main-thread and other-threads channels) and
+                // spawn a 32 MB Win32 thread that owns the ARA IPC
+                // Connection and runs the dispatch loop.  The Linux side
+                // connects to these sockets after it receives the response
+                // with has_ara_ipc == true.
+                if (!instance.ara_proxy_host) {
+                    const std::string main_path =
+                        (sockets_.base_dir_ / "ara_ipc_main.sock").string();
+                    const std::string other_path =
+                        (sockets_.base_dir_ / "ara_ipc_other.sock").string();
+
+                    // Clean up any stale socket files.
+                    ::unlink(main_path.c_str());
+                    ::unlink(other_path.c_str());
+
+                    // Create ASIO acceptors that the Linux side can connect
+                    // to.  These must be listening before we return the
+                    // response.
+                    asio::io_context& io_ctx = main_context_.context_;
+
+                    auto main_acceptor =
+                        std::make_shared<asio::local::stream_protocol::acceptor>(
+                            io_ctx,
+                            asio::local::stream_protocol::endpoint(main_path));
+                    auto other_acceptor =
+                        std::make_shared<asio::local::stream_protocol::acceptor>(
+                            io_ctx,
+                            asio::local::stream_protocol::endpoint(
+                                other_path));
+
+                    // Register the real Windows plugin ARAFactory with the
+                    // ProxyHost system so it can be queried by the ProxyPlugIn.
+                    ARA::IPC::ARAIPCProxyHostAddFactory(factory);
+
+                    // Register the binding handler so ARAIPCProxyPlugInBindToDocumentController
+                    // can work through the IPC layer.
+                    //
+                    // The binding handler is called when the Linux-side host
+                    // calls ARAIPCProxyPlugInBindToDocumentController.  The
+                    // plug_in_ref is an opaque companion-API instance ref.
+                    //
+                    // For yabridge, binding is handled by the existing
+                    // BindToDocumentController/WithRoles IPC handlers (which
+                    // the host calls directly via the IPlugInEntryPoint
+                    // interface).  The ARA SDK IPC layer's binding path is
+                    // used when the host goes through ProxyPlugIn directly.
+                    // We use inst_id to look up the correct instance.
+                    //
+                    // Note: ARAIPCProxyHostSetBindingHandler sets a
+                    // process-global handler, which is fine because
+                    // yabridge loads one plugin per process.
+                    ARA::IPC::ARAIPCProxyHostSetBindingHandler(
+                        [this, inst_id](
+                            ARA::IPC::ARAIPCPlugInInstanceRef /*plug_in_ref*/,
+                            ARA::ARADocumentControllerRef controller_ref,
+                            ARA::ARAPlugInInstanceRoleFlags known_roles,
+                            ARA::ARAPlugInInstanceRoleFlags assigned_roles)
+                            -> const ARA::ARAPlugInExtensionInstance* {
+                            const auto& [inst, lk] = get_instance(inst_id);
+
+                            // Try IPlugInEntryPoint2 first, fall back to v1.
+                            Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint2>
+                                ep2(inst.object);
+                            if (ep2) {
+                                return ep2->bindToDocumentControllerWithRoles(
+                                    controller_ref, known_roles, assigned_roles);
+                            }
+                            Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
+                                ep(inst.object);
+                            if (ep) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+                                return ep->bindToDocumentController(
+                                    controller_ref);
+#pragma GCC diagnostic pop
+                            }
+                            return nullptr;
+                        });
+
+                    // Shared state between this thread and the Win32 thread.
+                    auto ready_promise = std::make_shared<std::promise<void>>();
+                    auto ready_future = ready_promise->get_future();
+
+                    // We store the raw instance_id so the Win32 thread can
+                    // access the instance without holding any lock during the
+                    // long-running loop.
+                    const size_t inst_id = request.instance_id;
+
+                    // Atomic stop flag so the Destruct handler can ask the
+                    // ARA IPC dispatch thread to exit cleanly.
+                    auto stop_flag =
+                        std::make_shared<std::atomic<bool>>(false);
+                    instance.ara_ipc_stop_flag = stop_flag;
+
+                    auto ara_thread_fn = fu2::unique_function<void()>(
+                        [this, inst_id, main_acceptor, other_acceptor,
+                         ready_promise, stop_flag]() mutable {
+                            // Required: large stack, COM STA, Win32 msg queue
+                            OleInitialize(nullptr);
+                            {
+                                MSG dummy;
+                                PeekMessageW(&dummy, nullptr, 0, 0,
+                                             PM_NOREMOVE);
+                            }
+
+                            // Accept both connections synchronously.  The
+                            // Linux side connects shortly after receiving the
+                            // GetFactory response.
+                            asio::local::stream_protocol::socket main_sock(
+                                main_context_.context_);
+                            asio::local::stream_protocol::socket other_sock(
+                                main_context_.context_);
+                            try {
+                                main_acceptor->accept(main_sock);
+                                other_acceptor->accept(other_sock);
+                            } catch (const std::exception& e) {
+                                logger_.log(
+                                    std::string(
+                                        "ERROR: ARA IPC accept failed: ") +
+                                    e.what());
+                                OleUninitialize();
+                                ready_promise->set_value();
+                                return;
+                            }
+
+                            // Dup the fds so SocketChannel can own them
+                            // independently of the ASIO socket objects.
+                            const int main_fd =
+                                ::dup(main_sock.native_handle());
+                            const int other_fd =
+                                ::dup(other_sock.native_handle());
+                            main_sock.release();
+                            other_sock.release();
+                            main_acceptor.reset();
+                            other_acceptor.reset();
+
+                            if (main_fd < 0 || other_fd < 0) {
+                                logger_.log("ERROR: ARA IPC dup() failed");
+                                if (main_fd >= 0)
+                                    ::close(main_fd);
+                                if (other_fd >= 0)
+                                    ::close(other_fd);
+                                OleUninitialize();
+                                ready_promise->set_value();
+                                return;
+                            }
+
+                            // Build the Connection on this thread — this
+                            // makes the Win32 thread the ARA IPC "creation
+                            // thread" as required by the SDK.
+                            //
+                            // We use a shared_ptr for the Connection so the
+                            // SocketChannel background threads can hold a
+                            // weak reference and still work after the
+                            // ProxyHost is cleaned up.
+                            auto conn =
+                                std::make_unique<ARA::IPC::Connection>(
+                                    SocketIPC::makeSocketEncoder,
+                                    [this, inst_id](
+                                        const ARA::IPC::MessageID msg_id,
+                                        const ARA::IPC::MessageDecoder*
+                                            decoder,
+                                        ARA::IPC::MessageEncoder*
+                                            reply_encoder) {
+                                        // Forward to the ProxyHost handler.
+                                        // get_instance is safe here because
+                                        // this callback only fires while the
+                                        // SocketChannel is alive, which is
+                                        // inside the lifetime of the
+                                        // ProxyHost, which is owned by the
+                                        // Vst3PluginInstance.
+                                        const auto& [inst, lock] =
+                                            get_instance(inst_id);
+                                        if (inst.ara_proxy_host) {
+                                            inst.ara_proxy_host
+                                                ->handleReceivedMessage(
+                                                    msg_id, decoder,
+                                                    reply_encoder);
+                                        }
+                                    },
+                                    /*receiverEndianessMatches=*/true);
+
+                            conn->setMainThreadChannel(
+                                std::make_unique<SocketIPC::SocketChannel>(
+                                    main_fd));
+                            conn->setOtherThreadsChannel(
+                                std::make_unique<SocketIPC::SocketChannel>(
+                                    other_fd));
+
+                            // Construct the ProxyHost with the Connection.
+                            // ProxyHost's constructor is protected, so we
+                            // subclass it minimally here.
+                            struct DirectProxyHost : public ARA::IPC::ProxyHost {
+                                explicit DirectProxyHost(
+                                    std::unique_ptr<ARA::IPC::Connection> c)
+                                    : ARA::IPC::ProxyHost(std::move(c)) {}
+                                ARA::IPC::Connection* get_connection() {
+                                    return ARA::IPC::RemoteCaller::
+                                        getConnection();
+                                }
+                            };
+
+                            // Build and store the ProxyHost; extract the
+                            // raw Connection pointer for use in the loop.
+                            ARA::IPC::Connection* conn_ptr = nullptr;
+                            {
+                                const auto& [inst, lk] =
+                                    get_instance(inst_id);
+                                auto proxy =
+                                    std::make_unique<DirectProxyHost>(
+                                        std::move(conn));
+                                conn_ptr = proxy->get_connection();
+                                inst.ara_proxy_host = std::move(proxy);
+                                logger_.log(
+                                    "NOTE: ARA IPC ProxyHost ready for "
+                                    "instance " +
+                                    std::to_string(inst_id));
+                            }
+
+                            // Signal the GetFactory handler that the
+                            // ProxyHost is ready.
+                            ready_promise->set_value();
+                            ready_promise.reset();
+
+                            // ---- ARA IPC dispatch loop ----
+                            // processPendingMessageOnCreationThreadIfNeeded
+                            // must be called from the creation thread (this
+                            // Win32 thread).  We also pump Win32 messages
+                            // for plugins like Melodyne.
+                            // conn_ptr is safe here: the Connection outlives
+                            // this loop since it's owned by ara_proxy_host
+                            // which lives inside the Vst3PluginInstance.
+                            // When the instance is destroyed,
+                            // unregister_object_instance resets
+                            // ara_proxy_host which destroys the Connection
+                            // and closes the SocketChannel fds, causing
+                            // the SocketChannel receive threads to exit.
+                            // We use the stop flag to detect this cleanly.
+                            while (!stop_flag->load(
+                                std::memory_order_acquire)) {
+                                MSG msg;
+                                while (::PeekMessageA(&msg, nullptr, 0, 0,
+                                                      PM_REMOVE)) {
+                                    ::TranslateMessage(&msg);
+                                    ::DispatchMessageA(&msg);
+                                }
+                                conn_ptr->processPendingMessageOnCreationThreadIfNeeded();
+                                ::usleep(1000);
+                            }
+
+                            OleUninitialize();
+                        });
+
+                    constexpr SIZE_T ara_stack = 32 * 1024 * 1024;
+                    auto* fn_ptr = new fu2::unique_function<void()>(
+                        std::move(ara_thread_fn));
+                    HANDLE thread_handle = CreateThread(
+                        nullptr, ara_stack,
+                        reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                            win32_thread_trampoline),
+                        fn_ptr, STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+
+                    if (thread_handle) {
+                        CloseHandle(thread_handle);
+                        // Wait for ProxyHost to be constructed before
+                        // returning the response to the Linux side.
+                        ready_future.get();
+                        response.has_ara_ipc = instance.ara_proxy_host != nullptr;
+                        if (response.has_ara_ipc) {
+                            logger_.log(
+                                "NOTE: ARA IPC enabled for instance " +
+                                std::to_string(request.instance_id));
+                        }
+                    } else {
+                        logger_.log(
+                            "WARNING: ARA IPC CreateThread failed — "
+                            "falling back to legacy ARA bitsery proxying");
+                        // Reset the stop flag we already stored so it
+                        // doesn't linger on the instance.
+                        instance.ara_ipc_stop_flag.reset();
+                        delete fn_ptr;
+                    }
+                } else {
+                    // ProxyHost already set up from a prior GetFactory call.
+                    response.has_ara_ipc = true;
+                }
+
                 return response;
             },
             [&](const YaARAPlugInEntryPoint::BindToDocumentController& request)
@@ -1267,7 +1564,19 @@ void Vst3Bridge::run() {
             },
             [&](const Vst3PluginProxy::Destruct& request)
                 -> Vst3PluginProxy::Destruct::Response {
+                // Signal the ARA IPC dispatch thread to stop before
+                // tearing down the instance (which destroys ara_proxy_host
+                // and the Connection owned by it).
+                {
+                    const auto& [inst, lk] =
+                        get_instance(request.instance_id);
+                    if (inst.ara_ipc_stop_flag) {
+                        inst.ara_ipc_stop_flag->store(
+                            true, std::memory_order_release);
+                    }
+                }
                 unregister_object_instance(request.instance_id);
+
                 return Ack{};
             },
             [&](Vst3PluginProxy::SetState& request)

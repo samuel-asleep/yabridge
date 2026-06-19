@@ -18,9 +18,34 @@
 
 #include <map>
 #include <memory>
+#include <thread>
+
+#include <ghc/filesystem.hpp>
 
 #include "../vst3.h"
 #include "plug-view-proxy.h"
+
+// ARA SDK IPC layer for the Linux (host) side
+#define ARA_ENABLE_IPC 1
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wundef"
+#include "ARA_Library/IPC/ARAIPCProxyPlugIn.h"
+#include "ARA_Library/IPC/ARAIPCConnection.h"
+#pragma GCC diagnostic pop
+
+// SocketChannel and SocketEncoder live in the ARA SDK test directory.
+// We include them here (header-only) for the Linux side just as the test
+// programme does.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#include "ARA_Library/test/SocketChannel.h"
+#include "ARA_Library/test/SocketEncoder.h"
+#pragma GCC diagnostic pop
 
 class AraPlugInExtensionProxy;
 
@@ -128,12 +153,36 @@ class AraFactoryProxy {
     const ARA::ARADocumentControllerHostInstance* linux_host_instance_ =
         nullptr;
 
+    /**
+     * Set up the ARA SDK IPC ProxyPlugIn by connecting to the two named
+     * Unix domain sockets that the Wine host has opened.  After this call,
+     * all ARA factory operations (initialize, createDocumentController, etc.)
+     * are routed through the ProxyPlugIn instead of via bitsery messages.
+     *
+     * @param base_dir  The endpoint base directory shared with the Wine host
+     *                  (Vst3PluginBridge::sockets_.base_dir_).
+     * @param factory_id The factoryID to use for initializeARA calls.
+     */
+    void setup_ipc(const ghc::filesystem::path& base_dir,
+                   const std::string& factory_id);
+
    private:
     static void ARA_CALL
     initialize(const ARA::ARAInterfaceConfiguration* config) {
         if (!active_proxy_) {
             return;
         }
+
+        // If the ARA IPC layer is active, delegate to ProxyPlugIn.
+        if (active_proxy_->proxy_ref_) {
+            ARA::IPC::ARAIPCProxyPlugInInitializeARA(
+                active_proxy_->proxy_ref_,
+                active_proxy_->ipc_factory_id_.c_str(),
+                config ? config->desiredApiGeneration
+                       : ARA::kARAAPIGeneration_2_0_Final);
+            return;
+        }
+
         // Must use send_mutually_recursive_message() rather than send_message()
         // because Melodyne calls back into the host from within
         // initializeARAWithConfiguration(). Using a plain send_message() would
@@ -153,6 +202,15 @@ class AraFactoryProxy {
         if (!active_proxy_) {
             return;
         }
+
+        // If the ARA IPC layer is active, delegate to ProxyPlugIn.
+        if (active_proxy_->proxy_ref_) {
+            ARA::IPC::ARAIPCProxyPlugInUninitializeARA(
+                active_proxy_->proxy_ref_,
+                active_proxy_->ipc_factory_id_.c_str());
+            return;
+        }
+
         active_proxy_->bridge_.send_message(
             YaARAFactory::Uninitialize{
                 .instance_id = active_proxy_->instance_id_});
@@ -169,6 +227,24 @@ class AraFactoryProxy {
         active_proxy_->bridge_.logger_.log(
             "NOTE: ARA factory createDocumentControllerWithDocument() called "
             "— forwarding to Wine host via IPC");
+
+        // If the ARA IPC layer is active, delegate to ProxyPlugIn.
+        if (active_proxy_->proxy_ref_) {
+            active_proxy_->linux_host_instance_ = host_instance;
+            const ARA::ARADocumentControllerInstance* ctrl =
+                ARA::IPC::ARAIPCProxyPlugInCreateDocumentControllerWithDocument(
+                    active_proxy_->proxy_ref_,
+                    active_proxy_->ipc_factory_id_.c_str(),
+                    host_instance,
+                    properties);
+            if (!ctrl) {
+                active_proxy_->bridge_.logger_.log(
+                    "WARNING: createDocumentControllerWithDocument() via "
+                    "ProxyPlugIn returned null");
+            }
+            active_proxy_->document_controller_instance_ = ctrl;
+            return ctrl;
+        }
 
         const std::string doc_name =
             (properties && properties->name) ? properties->name : "";
@@ -228,6 +304,35 @@ class AraFactoryProxy {
     std::vector<const char*> compatible_document_archive_ids_;
     std::vector<ARA::ARAContentType> analyzeable_content_types_;
     ARA::ARAFactory factory_{};
+
+    // -----------------------------------------------------------------------
+    // ARA SDK IPC layer (set up when the Wine host signals has_ara_ipc=true)
+    // -----------------------------------------------------------------------
+
+    /**
+     * The ARA SDK IPC ProxyPlugIn.  All ARA factory API calls are forwarded
+     * through this object to the Wine-side ProxyHost instead of via bitsery.
+     * Owns the Connection internally.
+     */
+    std::unique_ptr<ARA::IPC::ProxyPlugIn> proxy_plug_in_;
+
+    /**
+     * Cached ARAIPCProxyPlugInRef cast from proxy_plug_in_.get().
+     */
+    ARA::IPC::ARAIPCProxyPlugInRef proxy_ref_ = nullptr;
+
+    /**
+     * Cached factory_id used for initializeARA / uninitializeARA calls.
+     */
+    std::string ipc_factory_id_;
+
+    /**
+     * Background thread that owns the Connection (making it the ARA IPC
+     * "creation thread") and runs
+     * processPendingMessageOnCreationThreadIfNeeded.
+     * A std::jthread is used so it auto-joins on destruction.
+     */
+    std::jthread ipc_thread_;
 };
 
 /**

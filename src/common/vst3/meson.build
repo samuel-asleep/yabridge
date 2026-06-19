@@ -9,10 +9,18 @@ vst3 = subproject('vst3', version : '3.7.7')
 # SDK's own warnings from appearing in yabridge's build output. This dependency
 # is folded into every vst3_sdk_*_dep below so no other meson.build needs
 # to reference it explicitly.
-ara_sdk_inc = include_directories('../../../subprojects/ara-sdk', is_system : true)
+#
+# Two roots are needed:
+#   ara-sdk/            → so '#include "ARA_Library/IPC/..."' resolves
+#   ara-sdk/ARA_Library → so '#include "test/SocketEncoder.h"' resolves
+#                         (SocketChannel.h uses this relative include)
+ara_sdk_inc = include_directories(
+  '../../../subprojects/ara-sdk',
+  '../../../subprojects/ara-sdk/ARA_Library',
+  is_system : true)
 
 # Also include our normal compiler options so symbols are hidden by default
-vst3_compiler_options = compiler_options + vst3.get_variable('compiler_options')
+vst3_compiler_options = compiler_options + vst3.get_variable('compiler_options') + ['-DARA_ENABLE_IPC=1']
 vst3_include_dir = vst3.get_variable('include_dir')
 
 # We need to do some minor hacking to get the SDK to compile with winegcc. Most

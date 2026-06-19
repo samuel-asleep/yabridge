@@ -18,6 +18,9 @@
 
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
 
+#include <asio/io_context.hpp>
+#include <asio/local/stream_protocol.hpp>
+
 #include "plug-view-proxy.h"
 
 /**
@@ -30,6 +33,122 @@
 // Thread-local definition for AraFactoryProxy::active_proxy_.
 // See the declaration in plugin-proxy.h for the rationale.
 thread_local AraFactoryProxy* AraFactoryProxy::active_proxy_ = nullptr;
+
+void AraFactoryProxy::setup_ipc(const ghc::filesystem::path& base_dir,
+                                 const std::string& factory_id) {
+    if (proxy_plug_in_) {
+        // Already set up.
+        return;
+    }
+
+    ipc_factory_id_ = factory_id;
+
+    const std::string main_path = (base_dir / "ara_ipc_main.sock").string();
+    const std::string other_path = (base_dir / "ara_ipc_other.sock").string();
+
+    bridge_.logger_.log(
+        "NOTE: AraFactoryProxy::setup_ipc connecting to " + main_path);
+
+    // Connect to both named Unix domain sockets that the Wine host is
+    // listening on.  We use a temporary ASIO io_context just for the
+    // blocking connect — the resulting fds are extracted and handed to
+    // SocketChannel which manages them from then on.
+    asio::io_context io_ctx;
+
+    auto connect_socket = [&](const std::string& path) -> int {
+        asio::local::stream_protocol::socket sock(io_ctx);
+        sock.connect(asio::local::stream_protocol::endpoint(path));
+        // dup() so SocketChannel can take ownership independently of ASIO.
+        const int fd = ::dup(sock.native_handle());
+        sock.close();
+        return fd;
+    };
+
+    int main_fd = -1;
+    int other_fd = -1;
+    try {
+        main_fd = connect_socket(main_path);
+        other_fd = connect_socket(other_path);
+    } catch (const std::exception& e) {
+        bridge_.logger_.log(
+            std::string("ERROR: AraFactoryProxy::setup_ipc connect failed: ") +
+            e.what());
+        if (main_fd >= 0)
+            ::close(main_fd);
+        if (other_fd >= 0)
+            ::close(other_fd);
+        return;
+    }
+
+    if (main_fd < 0 || other_fd < 0) {
+        bridge_.logger_.log("ERROR: AraFactoryProxy::setup_ipc dup() failed");
+        if (main_fd >= 0)
+            ::close(main_fd);
+        if (other_fd >= 0)
+            ::close(other_fd);
+        return;
+    }
+
+    // The ARA SDK requires that the Connection is created on the same thread
+    // that calls processPendingMessageOnCreationThreadIfNeeded.  We create
+    // ipc_thread_ to be that creation thread, constructing the Connection and
+    // ProxyPlugIn there.  A promise/future handshake lets us block here until
+    // setup is complete.
+    std::promise<void> ready_promise;
+    auto ready_future = ready_promise.get_future();
+
+    ipc_thread_ = std::jthread(
+        [main_fd, other_fd, p = std::move(ready_promise),
+         this](std::stop_token stop) mutable {
+            // Raw pointer to Connection, valid for the lifetime of this
+            // thread (Connection is owned by proxy_plug_in_ which lives in
+            // AraFactoryProxy, and ipc_thread_ is joined before
+            // AraFactoryProxy's destructor completes).
+            ARA::IPC::Connection* conn_ptr = nullptr;
+
+            auto conn = std::make_unique<ARA::IPC::Connection>(
+                SocketIPC::makeSocketEncoder,
+                ARA::IPC::ProxyPlugIn::handleReceivedMessage,
+                /*receiverEndianessMatches=*/true,
+                /*waitForMessageDelegate=*/[&conn_ptr]() {
+                    if (conn_ptr)
+                        conn_ptr->processPendingMessageOnCreationThreadIfNeeded();
+                });
+
+            conn_ptr = conn.get();
+
+            conn->setMainThreadChannel(
+                std::make_unique<SocketIPC::SocketChannel>(main_fd));
+            conn->setOtherThreadsChannel(
+                std::make_unique<SocketIPC::SocketChannel>(other_fd));
+
+            proxy_plug_in_ =
+                std::make_unique<ARA::IPC::ProxyPlugIn>(std::move(conn));
+            proxy_ref_ = reinterpret_cast<ARA::IPC::ARAIPCProxyPlugInRef>(
+                proxy_plug_in_.get());
+
+            // Signal setup_ipc() that construction is done.
+            p.set_value();
+
+            // ---- ARA IPC dispatch loop ----
+            // Must be called on the creation thread (this thread).
+            while (!stop.stop_requested()) {
+                conn_ptr->processPendingMessageOnCreationThreadIfNeeded();
+                ::usleep(500);
+            }
+
+            // Null proxy_ref_ before the ProxyPlugIn is destroyed so
+            // any in-flight static callbacks see nullptr.
+            proxy_ref_ = nullptr;
+        });
+
+    // Block until Connection + ProxyPlugIn are fully constructed on ipc_thread_.
+    ready_future.get();
+
+    bridge_.logger_.log(
+        "NOTE: AraFactoryProxy ARA IPC ProxyPlugIn connected for factory '" +
+        factory_id + "'");
+}
 
 constexpr char other_instance_message_id[] = "yabridge_other_instance";
 /**
@@ -112,6 +231,16 @@ const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
     if (!ara_factory_proxy_) {
         ara_factory_proxy_ = std::make_unique<AraFactoryProxy>(
             bridge_, instance_id(), response.factory);
+    }
+
+    // If the Wine host has set up the ARA SDK IPC layer, connect the
+    // ProxyPlugIn on our side.  This wires all ARAFactory function calls
+    // (initialize, createDocumentController, etc.) through the ARA SDK
+    // IPC transport instead of individual bitsery messages.
+    if (response.has_ara_ipc && !ara_factory_proxy_->proxy_plug_in_) {
+        ara_factory_proxy_->setup_ipc(
+            bridge_.socket_base_dir(),
+            response.factory.factory_id);
     }
 
     return ara_factory_proxy_->get();

@@ -30,6 +30,19 @@
 #include "../editor.h"
 #include "common.h"
 
+// ARA SDK IPC layer — only compiled when VST3 is enabled.
+#define ARA_ENABLE_IPC 1
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#pragma GCC diagnostic ignored "-Wundef"
+#include "ARA_Library/IPC/ARAIPCProxyHost.h"
+#include "ARA_Library/IPC/ARAIPCConnection.h"
+#include "ARA_Library/test/SocketChannel.h"
+#include "ARA_Library/test/SocketEncoder.h"
+#pragma GCC diagnostic pop
+
 // Forward declarations
 class Vst3ContextMenuProxyImpl;
 class Vst3Bridge;
@@ -376,6 +389,30 @@ struct Vst3PluginInstance {
      */
     std::unique_ptr<WineARADocumentControllerHostInstance>
         ara_document_controller_host_instance;
+
+    /**
+     * The ARA SDK IPC `ProxyHost` for this plugin instance.  Created during
+     * `YaARAPlugInEntryPoint::GetFactory` handling when the plugin is ARA
+     * capable.  The ProxyHost wraps the real `ARAFactory` obtained from the
+     * Windows VST3 plugin and handles incoming ARA API calls sent by the
+     * `ProxyPlugIn` running in the Linux host process over two named Unix
+     * domain sockets.
+     *
+     * Lifetime: from the first `GetFactory` call until the plugin instance is
+     * destroyed.
+     *
+     * The concrete type is `AraIpcProxyHost` defined in vst3.cpp.  We store
+     * it through the abstract `ARA::IPC::ProxyHost` base so this header does
+     * not need to define the concrete subclass.
+     */
+    std::unique_ptr<ARA::IPC::ProxyHost> ara_proxy_host;
+
+    /**
+     * Stop flag for the ARA IPC dispatch Win32 thread.  Set to true when
+     * the plugin instance is destroyed so the thread exits its
+     * `processPendingMessageOnCreationThreadIfNeeded` loop cleanly.
+     */
+    std::shared_ptr<std::atomic<bool>> ara_ipc_stop_flag;
 
     /**
      * This contains smart pointers to all VST3 plugin interfaces that can be

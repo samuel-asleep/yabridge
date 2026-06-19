@@ -177,5 +177,10 @@ if with_vst3
     'host-process.cpp',
     'utils.cpp',
     'vst3-plugin.cpp',
+    # ARA SDK IPC library — Linux (host) side needs Connection + ProxyPlugIn
+    '../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCConnection.cpp',
+    '../../subprojects/ara-sdk/ARA_Library/IPC/ARAIPCProxyPlugIn.cpp',
+    '../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAHostDispatch.cpp',
+    '../../subprojects/ara-sdk/ARA_Library/Dispatch/ARAPlugInDispatch.cpp',
   )
 endif
