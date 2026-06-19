@@ -4,20 +4,64 @@
 
 vst3 = subproject('vst3', version : '3.7.7')
 
-# The ARA SDK is a plain git submodule with no meson.build, so we expose its
-# headers directly via include_directories(). is_system suppresses the ARA
-# SDK's own warnings from appearing in yabridge's build output. This dependency
-# is folded into every vst3_sdk_*_dep below so no other meson.build needs
-# to reference it explicitly.
-#
-# Two roots are needed:
-#   ara-sdk/            → so '#include "ARA_Library/IPC/..."' resolves
-#   ara-sdk/ARA_Library → so '#include "test/SocketEncoder.h"' resolves
-#                         (SocketChannel.h uses this relative include)
-ara_sdk_inc = include_directories(
-  '../../../subprojects/ara-sdk',
-  '../../../subprojects/ara-sdk/ARA_Library',
-  is_system : true)
+# The ARA SDK is a git submodule declared as a Meson subproject via
+# subprojects/ara-sdk/meson.build. It exposes include directories and source
+# file lists. We build the ARA IPC static libraries here in the parent project
+# so we can apply the correct native/cross-compile flags for each target.
+ara_sdk_sp = subproject('ara-sdk')
+ara_sdk_inc          = ara_sdk_sp.get_variable('ara_inc')
+ara_sdk_compile_args = ara_sdk_sp.get_variable('ara_compile_args')
+ara_ipc_plugin_sources = ara_sdk_sp.get_variable('ara_ipc_plugin_sources')
+ara_ipc_host_sources   = ara_sdk_sp.get_variable('ara_ipc_host_sources')
+
+# Native (Linux) ARA IPC static library — linked into libyabridge-vst3.so
+ara_ipc_native = static_library(
+  'ara_ipc_native',
+  ara_ipc_plugin_sources,
+  native : true,
+  include_directories : ara_sdk_inc,
+  cpp_args : ara_sdk_compile_args,
+  override_options : ['warning_level=0'],
+)
+
+ara_ipc_native_dep = declare_dependency(
+  link_with : ara_ipc_native,
+  include_directories : ara_sdk_inc,
+  compile_args : ara_sdk_compile_args,
+)
+
+# Cross (Wine) ARA IPC static library — linked into yabridge-host.exe
+if is_64bit_system
+  ara_ipc_wine_64bit = static_library(
+    'ara_ipc_wine_64bit',
+    ara_ipc_host_sources,
+    native : false,
+    include_directories : ara_sdk_inc,
+    cpp_args : ara_sdk_compile_args + wine_64bit_compiler_options,
+    override_options : ['warning_level=0'],
+  )
+  ara_ipc_wine_64bit_dep = declare_dependency(
+    link_with : ara_ipc_wine_64bit,
+    include_directories : ara_sdk_inc,
+    compile_args : ara_sdk_compile_args,
+  )
+endif
+
+if with_bitbridge
+  ara_ipc_wine_32bit = static_library(
+    'ara_ipc_wine_32bit',
+    ara_ipc_host_sources,
+    native : false,
+    include_directories : ara_sdk_inc,
+    cpp_args : ara_sdk_compile_args + wine_32bit_compiler_options,
+    override_options : ['warning_level=0'],
+  )
+  ara_ipc_wine_32bit_dep = declare_dependency(
+    link_with : ara_ipc_wine_32bit,
+    include_directories : ara_sdk_inc,
+    compile_args : ara_sdk_compile_args,
+  )
+endif
 
 # Also include our normal compiler options so symbols are hidden by default
 vst3_compiler_options = compiler_options + vst3.get_variable('compiler_options') + ['-DARA_ENABLE_IPC=1']
@@ -124,6 +168,7 @@ vst3_sdk_native_dep = declare_dependency(
   link_with : vst3_sdk_native,
   include_directories : [vst3_include_dir, ara_sdk_inc],
   compile_args : vst3_compiler_options,
+  dependencies : [ara_ipc_native_dep],
 )
 
 if is_64bit_system
@@ -134,6 +179,7 @@ if is_64bit_system
     # alternative would be patching every location in the SDK where they include
     # `windows.h`
     compile_args : vst3_compiler_options + wine_64bit_compiler_options,
+    dependencies : [ara_ipc_wine_64bit_dep],
   )
 endif
 
@@ -145,5 +191,6 @@ if with_bitbridge
     # alternative would be patching every location in the SDK where they include
     # `windows.h`
     compile_args : vst3_compiler_options + wine_32bit_compiler_options,
+    dependencies : [ara_ipc_wine_32bit_dep],
   )
 endif
