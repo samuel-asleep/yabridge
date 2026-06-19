@@ -4,15 +4,35 @@
 
 vst3 = subproject('vst3', version : '3.7.7')
 
-# The ARA SDK is a git submodule declared as a Meson subproject via
-# subprojects/ara-sdk/meson.build. It exposes include directories and source
-# file lists. We build the ARA IPC static libraries here in the parent project
-# so we can apply the correct native/cross-compile flags for each target.
-ara_sdk_sp = subproject('ara-sdk')
-ara_sdk_inc          = ara_sdk_sp.get_variable('ara_inc')
-ara_sdk_compile_args = ara_sdk_sp.get_variable('ara_compile_args')
-ara_ipc_plugin_sources = ara_sdk_sp.get_variable('ara_ipc_plugin_sources')
-ara_ipc_host_sources   = ara_sdk_sp.get_variable('ara_ipc_host_sources')
+# The ARA SDK is a git submodule at subprojects/ara-sdk/.  We build the
+# ARA IPC static libraries directly here, using absolute source paths
+# constructed from the project source root to avoid Meson subproject sandbox
+# restrictions on files() objects.  The include_directories() sandbox
+# violation warnings are harmless and suppressed by is_system:true.
+ara_sdk_root = meson.project_source_root() / 'subprojects' / 'ara-sdk'
+
+ara_sdk_inc = include_directories(
+  ara_sdk_root,
+  ara_sdk_root / 'ARA_Library',
+  is_system : true)
+
+ara_sdk_compile_args = ['-DARA_ENABLE_IPC=1']
+
+# Source files for the Linux (host/plugin native) side: Connection + ProxyPlugIn
+ara_ipc_plugin_sources = [
+  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCConnection.cpp',
+  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCProxyPlugIn.cpp',
+  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAHostDispatch.cpp',
+  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAPlugInDispatch.cpp',
+]
+
+# Source files for the Wine host side: Connection + ProxyHost
+ara_ipc_host_sources = [
+  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCConnection.cpp',
+  ara_sdk_root / 'ARA_Library' / 'IPC' / 'ARAIPCProxyHost.cpp',
+  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAHostDispatch.cpp',
+  ara_sdk_root / 'ARA_Library' / 'Dispatch' / 'ARAPlugInDispatch.cpp',
+]
 
 # Native (Linux) ARA IPC static library — linked into libyabridge-vst3.so
 ara_ipc_native = static_library(
