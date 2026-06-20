@@ -44,14 +44,14 @@ ara_ipc_native = static_library(
   ara_ipc_plugin_sources,
   native : true,
   include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-  cpp_args : ara_sdk_compile_args,
+  cpp_args : ara_sdk_compile_args + ['-Wno-deprecated-declarations'],
   override_options : ['warning_level=0'],
 )
 
 ara_ipc_native_dep = declare_dependency(
   link_with : ara_ipc_native,
   include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-  compile_args : ara_sdk_compile_args,
+  compile_args : ara_sdk_compile_args + ['-Wno-deprecated-declarations'],
 )
 
 # Cross (Wine) ARA IPC static library — linked into yabridge-host.exe
@@ -61,13 +61,13 @@ if is_64bit_system
     ara_ipc_host_sources,
     native : false,
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    cpp_args : ara_sdk_compile_args + wine_64bit_compiler_options + ['-U__i386__'],
+    cpp_args : ara_sdk_compile_args + wine_64bit_compiler_options + ['-U__i386__', '-Wno-deprecated-declarations'],
     override_options : ['warning_level=0'],
   )
   ara_ipc_wine_64bit_dep = declare_dependency(
     link_with : ara_ipc_wine_64bit,
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    compile_args : ara_sdk_compile_args + ['-U__i386__'],
+    compile_args : ara_sdk_compile_args + ['-U__i386__', '-Wno-deprecated-declarations'],
   )
 endif
 
@@ -78,7 +78,7 @@ if with_bitbridge
   # the headers compile (they're guarded by the macro).
   ara_ipc_wine_32bit_dep = declare_dependency(
     include_directories : [ara_sdk_inc, ara_ipc_own_inc],
-    compile_args : ara_sdk_compile_args + ['-DYABRIDGE_DISABLE_ARA_IPC'],
+    compile_args : ara_sdk_compile_args + ['-DYABRIDGE_DISABLE_ARA_IPC', '-Wno-deprecated-declarations'],
   )
 endif
 

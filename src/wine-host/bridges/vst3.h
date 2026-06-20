@@ -642,6 +642,35 @@ class Vst3Bridge : public HostBridge {
      */
     Vst3Logger logger_;
 
+#if !defined(YABRIDGE_DISABLE_ARA_IPC)
+    /**
+     * Perform an ARA IPC binding for the given instance.  Called from the
+     * static ARAIPCBindingHandler trampoline inside the GetFactory handler.
+     * Public so the trampoline (a non-capturing lambda inside run()) can call
+     * it via a stored Vst3Bridge pointer.
+     */
+    const ARA::ARAPlugInExtensionInstance* ara_ipc_bind(
+        size_t instance_id,
+        ARA::ARADocumentControllerRef controller_ref,
+        ARA::ARAPlugInInstanceRoleFlags known_roles,
+        ARA::ARAPlugInInstanceRoleFlags assigned_roles) {
+        const auto& [inst, lk] = get_instance(instance_id);
+        Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint2> ep2(inst.object);
+        if (ep2) {
+            return ep2->bindToDocumentControllerWithRoles(
+                controller_ref, known_roles, assigned_roles);
+        }
+        Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint> ep(inst.object);
+        if (ep) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+            return ep->bindToDocumentController(controller_ref);
+#pragma GCC diagnostic pop
+        }
+        return nullptr;
+    }
+#endif
+
    private:
     /**
      * Generate a nique instance identifier using an atomic fetch-and-add. This

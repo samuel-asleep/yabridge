@@ -542,51 +542,6 @@ void Vst3Bridge::run() {
                     // ProxyHost system so it can be queried by the ProxyPlugIn.
                     ARA::IPC::ARAIPCProxyHostAddFactory(factory);
 
-                    // Register the binding handler so ARAIPCProxyPlugInBindToDocumentController
-                    // can work through the IPC layer.
-                    //
-                    // The binding handler is called when the Linux-side host
-                    // calls ARAIPCProxyPlugInBindToDocumentController.  The
-                    // plug_in_ref is an opaque companion-API instance ref.
-                    //
-                    // For yabridge, binding is handled by the existing
-                    // BindToDocumentController/WithRoles IPC handlers (which
-                    // the host calls directly via the IPlugInEntryPoint
-                    // interface).  The ARA SDK IPC layer's binding path is
-                    // used when the host goes through ProxyPlugIn directly.
-                    // We use inst_id to look up the correct instance.
-                    //
-                    // Note: ARAIPCProxyHostSetBindingHandler sets a
-                    // process-global handler, which is fine because
-                    // yabridge loads one plugin per process.
-                    ARA::IPC::ARAIPCProxyHostSetBindingHandler(
-                        [this, inst_id](
-                            ARA::IPC::ARAIPCPlugInInstanceRef /*plug_in_ref*/,
-                            ARA::ARADocumentControllerRef controller_ref,
-                            ARA::ARAPlugInInstanceRoleFlags known_roles,
-                            ARA::ARAPlugInInstanceRoleFlags assigned_roles)
-                            -> const ARA::ARAPlugInExtensionInstance* {
-                            const auto& [inst, lk] = get_instance(inst_id);
-
-                            // Try IPlugInEntryPoint2 first, fall back to v1.
-                            Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint2>
-                                ep2(inst.object);
-                            if (ep2) {
-                                return ep2->bindToDocumentControllerWithRoles(
-                                    controller_ref, known_roles, assigned_roles);
-                            }
-                            Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>
-                                ep(inst.object);
-                            if (ep) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-                                return ep->bindToDocumentController(
-                                    controller_ref);
-#pragma GCC diagnostic pop
-                            }
-                            return nullptr;
-                        });
-
                     // Shared state between this thread and the Win32 thread.
                     auto ready_promise = std::make_shared<std::promise<void>>();
                     auto ready_future = ready_promise->get_future();
@@ -595,6 +550,32 @@ void Vst3Bridge::run() {
                     // access the instance without holding any lock during the
                     // long-running loop.
                     const size_t inst_id = request.instance_id;
+
+                    // Register the binding handler so ARAIPCProxyPlugInBindToDocumentController
+                    // can work through the IPC layer.
+                    //
+                    // ARAIPCBindingHandler is a plain C function pointer so we
+                    // can't use a capturing lambda.  Store bridge + inst_id in
+                    // a thread-local struct and use a static trampoline.
+                    struct BindingCtx {
+                        Vst3Bridge* bridge;
+                        size_t      inst_id;
+                    };
+                    static thread_local BindingCtx s_binding_ctx;
+                    s_binding_ctx = {this, inst_id};
+
+                    ARA::IPC::ARAIPCProxyHostSetBindingHandler(
+                        [](ARA::IPC::ARAIPCPlugInInstanceRef /*plug_in_ref*/,
+                           ARA::ARADocumentControllerRef controller_ref,
+                           ARA::ARAPlugInInstanceRoleFlags known_roles,
+                           ARA::ARAPlugInInstanceRoleFlags assigned_roles)
+                            -> const ARA::ARAPlugInExtensionInstance* {
+                            return s_binding_ctx.bridge->ara_ipc_bind(
+                                s_binding_ctx.inst_id,
+                                controller_ref,
+                                known_roles,
+                                assigned_roles);
+                        });
 
                     // Atomic stop flag so the Destruct handler can ask the
                     // ARA IPC dispatch thread to exit cleanly.
