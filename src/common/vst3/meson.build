@@ -18,7 +18,7 @@ ara_sdk_inc = include_directories('../../../subprojects/ara-sdk', is_system : tr
 # parent repo so they are always available.
 ara_ipc_own_inc = include_directories('../../common/ara-ipc', is_system : true)
 
-ara_sdk_compile_args = ['-DARA_ENABLE_IPC=1']
+ara_sdk_compile_args = ['-DARA_ENABLE_IPC=1', '-DARA_ENABLE_INTERNAL_ASSERTS=0', '-DARA_VALIDATE_API_CALLS=0']
 
 # Source files for the Linux (host/plugin native) side: Connection + ProxyPlugIn
 # All files are in src/common/ara-ipc/ (yabridge's own source tree) so there
