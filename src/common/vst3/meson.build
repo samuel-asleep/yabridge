@@ -28,6 +28,7 @@ ara_ipc_plugin_sources = files(
   '../../common/ara-ipc/ARAIPCProxyPlugIn.cpp',
   '../../common/ara-ipc/ARAHostDispatch.cpp',
   '../../common/ara-ipc/ARAPlugInDispatch.cpp',
+  '../../common/ara-ipc/ARAChannelFormat.cpp',
 )
 
 # Source files for the Wine host side: Connection + ProxyHost
@@ -36,6 +37,7 @@ ara_ipc_host_sources = files(
   '../../common/ara-ipc/ARAIPCProxyHost.cpp',
   '../../common/ara-ipc/ARAHostDispatch.cpp',
   '../../common/ara-ipc/ARAPlugInDispatch.cpp',
+  '../../common/ara-ipc/ARAChannelFormat.cpp',
 )
 
 # Native (Linux) ARA IPC static library — linked into libyabridge-vst3.so
