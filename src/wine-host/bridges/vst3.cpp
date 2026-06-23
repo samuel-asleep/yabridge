@@ -594,6 +594,17 @@ void Vst3Bridge::run() {
                                              PM_NOREMOVE);
                             }
 
+                            // Signal the GetFactory handler now — the
+                            // acceptors are already listening, so the Linux
+                            // side can connect as soon as it receives the
+                            // response.  We must not wait until after
+                            // accept() here or we deadlock: Linux connects
+                            // only after receiving the response, which the
+                            // Wine side would never send because it's blocked
+                            // in accept() waiting for Linux to connect.
+                            ready_promise->set_value();
+                            ready_promise.reset();
+
                             // Accept both connections synchronously.  The
                             // Linux side connects shortly after receiving the
                             // GetFactory response.
@@ -610,7 +621,6 @@ void Vst3Bridge::run() {
                                         "ERROR: ARA IPC accept failed: ") +
                                     e.what());
                                 OleUninitialize();
-                                ready_promise->set_value();
                                 return;
                             }
 
@@ -632,7 +642,6 @@ void Vst3Bridge::run() {
                                 if (other_fd >= 0)
                                     ::close(other_fd);
                                 OleUninitialize();
-                                ready_promise->set_value();
                                 return;
                             }
 
@@ -653,13 +662,6 @@ void Vst3Bridge::run() {
                                             decoder,
                                         ARA::IPC::MessageEncoder*
                                             reply_encoder) {
-                                        // Forward to the ProxyHost handler.
-                                        // get_instance is safe here because
-                                        // this callback only fires while the
-                                        // SocketChannel is alive, which is
-                                        // inside the lifetime of the
-                                        // ProxyHost, which is owned by the
-                                        // Vst3PluginInstance.
                                         const auto& [inst, lock] =
                                             get_instance(inst_id);
                                         if (inst.ara_proxy_host) {
@@ -670,13 +672,6 @@ void Vst3Bridge::run() {
                                         }
                                     },
                                     /*receiverEndianessMatches=*/true);
-
-                            conn->setMainThreadChannel(
-                                std::make_unique<SocketIPC::SocketChannel>(
-                                    main_fd));
-                            conn->setOtherThreadsChannel(
-                                std::make_unique<SocketIPC::SocketChannel>(
-                                    other_fd));
 
                             // Construct the ProxyHost with the Connection.
                             // ProxyHost's constructor is protected, so we
@@ -691,8 +686,12 @@ void Vst3Bridge::run() {
                                 }
                             };
 
-                            // Build and store the ProxyHost; extract the
-                            // raw Connection pointer for use in the loop.
+                            // Store the ProxyHost BEFORE attaching the
+                            // SocketChannels.  The SocketChannel receive
+                            // threads start delivering messages as soon as
+                            // setMainThreadChannel / setOtherThreadsChannel
+                            // are called, so ara_proxy_host must be set
+                            // first or early messages would be dropped.
                             ARA::IPC::Connection* conn_ptr = nullptr;
                             {
                                 const auto& [inst, lk] =
@@ -707,6 +706,15 @@ void Vst3Bridge::run() {
                                     "instance " +
                                     std::to_string(inst_id));
                             }
+
+                            // Now attach the channels — receive threads
+                            // start here, handler is already in place.
+                            conn_ptr->setMainThreadChannel(
+                                std::make_unique<SocketIPC::SocketChannel>(
+                                    main_fd));
+                            conn_ptr->setOtherThreadsChannel(
+                                std::make_unique<SocketIPC::SocketChannel>(
+                                    other_fd));
 
                             // Signal the GetFactory handler that the
                             // ProxyHost is ready.
@@ -753,15 +761,17 @@ void Vst3Bridge::run() {
 
                     if (thread_handle) {
                         CloseHandle(thread_handle);
-                        // Wait for ProxyHost to be constructed before
-                        // returning the response to the Linux side.
+                        // Wait until the Win32 thread has initialised COM and
+                        // created its message queue (i.e. right after
+                        // PeekMessageW).  At that point the acceptors are
+                        // already listening, so it is safe to return the
+                        // response — Linux will connect and the blocking
+                        // accept() on the Win32 thread will unblock.
                         ready_future.get();
-                        response.has_ara_ipc = instance.ara_proxy_host != nullptr;
-                        if (response.has_ara_ipc) {
-                            logger_.log(
-                                "NOTE: ARA IPC enabled for instance " +
-                                std::to_string(request.instance_id));
-                        }
+                        response.has_ara_ipc = true;
+                        logger_.log(
+                            "NOTE: ARA IPC enabled for instance " +
+                            std::to_string(request.instance_id));
                     } else {
                         logger_.log(
                             "WARNING: ARA IPC CreateThread failed — "
