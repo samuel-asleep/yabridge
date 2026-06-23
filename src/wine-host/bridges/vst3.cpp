@@ -716,11 +716,6 @@ void Vst3Bridge::run() {
                                 std::make_unique<SocketIPC::SocketChannel>(
                                     other_fd));
 
-                            // Signal the GetFactory handler that the
-                            // ProxyHost is ready.
-                            ready_promise->set_value();
-                            ready_promise.reset();
-
                             // ---- ARA IPC dispatch loop ----
                             // processPendingMessageOnCreationThreadIfNeeded
                             // must be called from the creation thread (this

@@ -2,3 +2,5 @@
 .kiro/
 .playwright-mcp/
 *.log
+builder/
+ARAPluginDemo-*
