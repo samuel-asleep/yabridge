@@ -188,11 +188,11 @@ class AraFactoryProxy {
             auto p = std::make_shared<std::promise<void>>();
             auto f = p->get_future();
             auto* proxy = active_proxy_;
-            const ARAAPIGeneration gen =
+            const ARA::ARAAPIGeneration gen =
                 config ? config->desiredApiGeneration
                        : ARA::kARAAPIGeneration_2_0_Final;
             proxy->ipc_connection_->dispatchToCreationThread(
-                [proxy, gen, p]() mutable {
+                [proxy, gen, p]() {
                     ARA::IPC::ARAIPCProxyPlugInInitializeARA(
                         proxy->proxy_ref_,
                         proxy->ipc_factory_id_.c_str(),
