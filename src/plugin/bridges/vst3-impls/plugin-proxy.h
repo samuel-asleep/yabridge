@@ -239,12 +239,28 @@ class AraFactoryProxy {
         // If the ARA IPC layer is active, delegate to ProxyPlugIn.
         if (active_proxy_->proxy_ref_) {
             active_proxy_->linux_host_instance_ = host_instance;
-            const ARA::ARADocumentControllerInstance* ctrl =
-                ARA::IPC::ARAIPCProxyPlugInCreateDocumentControllerWithDocument(
-                    active_proxy_->proxy_ref_,
-                    active_proxy_->ipc_factory_id_.c_str(),
-                    host_instance,
-                    properties);
+
+            // DocumentController constructor must run on the IPC creation
+            // thread (ipc_thread_) because remoteCall asserts
+            // wasCreatedOnCurrentThread().  Dispatch via the Connection and
+            // block the calling thread with a promise/future.
+            const ARA::ARADocumentControllerInstance* ctrl = nullptr;
+            std::promise<const ARA::ARADocumentControllerInstance*> p;
+            auto f = p.get_future();
+
+            auto* proxy = active_proxy_;
+            active_proxy_->ipc_connection_->dispatchToCreationThread(
+                [proxy, host_instance, properties, p = std::move(p)]() mutable {
+                    const ARA::ARADocumentControllerInstance* result =
+                        ARA::IPC::ARAIPCProxyPlugInCreateDocumentControllerWithDocument(
+                            proxy->proxy_ref_,
+                            proxy->ipc_factory_id_.c_str(),
+                            host_instance,
+                            properties);
+                    p.set_value(result);
+                });
+
+            ctrl = f.get();
             if (!ctrl) {
                 active_proxy_->bridge_.logger_.log(
                     "WARNING: createDocumentControllerWithDocument() via "
@@ -323,6 +339,12 @@ class AraFactoryProxy {
      * Owns the Connection internally.
      */
     std::unique_ptr<ARA::IPC::ProxyPlugIn> proxy_plug_in_;
+
+    /**
+     * Raw pointer to the Connection owned by proxy_plug_in_, cached for
+     * dispatchToCreationThread calls from non-creation threads.
+     */
+    ARA::IPC::Connection* ipc_connection_ = nullptr;
 
     /**
      * Cached ARAIPCProxyPlugInRef cast from proxy_plug_in_.get().

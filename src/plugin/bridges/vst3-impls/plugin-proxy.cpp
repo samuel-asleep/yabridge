@@ -126,6 +126,7 @@ void AraFactoryProxy::setup_ipc(const ghc::filesystem::path& base_dir,
                 std::make_unique<ARA::IPC::ProxyPlugIn>(std::move(conn));
             proxy_ref_ = reinterpret_cast<ARA::IPC::ARAIPCProxyPlugInRef>(
                 proxy_plug_in_.get());
+            ipc_connection_ = conn_ptr;
 
             // Signal setup_ipc() that construction is done.
             p.set_value();
@@ -140,6 +141,7 @@ void AraFactoryProxy::setup_ipc(const ghc::filesystem::path& base_dir,
             // Null proxy_ref_ before the ProxyPlugIn is destroyed so
             // any in-flight static callbacks see nullptr.
             proxy_ref_ = nullptr;
+            ipc_connection_ = nullptr;
         });
 
     // Block until Connection + ProxyPlugIn are fully constructed on ipc_thread_.
