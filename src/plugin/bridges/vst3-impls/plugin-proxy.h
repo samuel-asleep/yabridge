@@ -183,11 +183,23 @@ class AraFactoryProxy {
 
         // If the ARA IPC layer is active, delegate to ProxyPlugIn.
         if (active_proxy_->proxy_ref_) {
-            ARA::IPC::ARAIPCProxyPlugInInitializeARA(
-                active_proxy_->proxy_ref_,
-                active_proxy_->ipc_factory_id_.c_str(),
+            // initializeARA and all subsequent remoteCall-based operations
+            // must run on ipc_thread_ (the Connection creation thread).
+            std::promise<void> p;
+            auto f = p.get_future();
+            auto* proxy = active_proxy_;
+            const ARAAPIGeneration gen =
                 config ? config->desiredApiGeneration
-                       : ARA::kARAAPIGeneration_2_0_Final);
+                       : ARA::kARAAPIGeneration_2_0_Final;
+            proxy->ipc_connection_->dispatchToCreationThread(
+                [proxy, gen, p = std::move(p)]() mutable {
+                    ARA::IPC::ARAIPCProxyPlugInInitializeARA(
+                        proxy->proxy_ref_,
+                        proxy->ipc_factory_id_.c_str(),
+                        gen);
+                    p.set_value();
+                });
+            f.get();
             return;
         }
 
