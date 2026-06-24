@@ -800,6 +800,8 @@ void ProxyHost::handleReceivedMessage (const MessageID messageID, const MessageD
     }
     else if (messageID == kCreateDocumentControllerMethodID)
     {
+        std::fprintf(stderr, "[ProxyHost] kCreateDocumentControllerMethodID received\n");
+        std::fflush(stderr);
         ARAPersistentID factoryID;
         ARAAudioAccessControllerHostRef audioAccessControllerHostRef;
         ARAArchivingControllerHostRef archivingControllerHostRef;
@@ -829,6 +831,8 @@ void ProxyHost::handleReceivedMessage (const MessageID messageID, const MessageD
                                                                                  contentAccessController, modelUpdateController, playbackController } };
 
             auto documentControllerInstance { factory->createDocumentControllerWithDocument (hostInstance, &properties) };
+            std::fprintf(stderr, "[ProxyHost] createDocumentControllerWithDocument returned: %p\n", (void*)documentControllerInstance);
+            std::fflush(stderr);
             ARA_VALIDATE_API_CONDITION (documentControllerInstance != nullptr);
             ARA_VALIDATE_API_INTERFACE (documentControllerInstance->documentControllerInterface, ARADocumentControllerInterface);
             auto documentController { new DocumentController (hostInstance, documentControllerInstance) };
