@@ -185,19 +185,19 @@ class AraFactoryProxy {
         if (active_proxy_->proxy_ref_) {
             // initializeARA and all subsequent remoteCall-based operations
             // must run on ipc_thread_ (the Connection creation thread).
-            std::promise<void> p;
-            auto f = p.get_future();
+            auto p = std::make_shared<std::promise<void>>();
+            auto f = p->get_future();
             auto* proxy = active_proxy_;
             const ARAAPIGeneration gen =
                 config ? config->desiredApiGeneration
                        : ARA::kARAAPIGeneration_2_0_Final;
             proxy->ipc_connection_->dispatchToCreationThread(
-                [proxy, gen, p = std::move(p)]() mutable {
+                [proxy, gen, p]() mutable {
                     ARA::IPC::ARAIPCProxyPlugInInitializeARA(
                         proxy->proxy_ref_,
                         proxy->ipc_factory_id_.c_str(),
                         gen);
-                    p.set_value();
+                    p->set_value();
                 });
             f.get();
             return;
@@ -256,23 +256,22 @@ class AraFactoryProxy {
             // thread (ipc_thread_) because remoteCall asserts
             // wasCreatedOnCurrentThread().  Dispatch via the Connection and
             // block the calling thread with a promise/future.
-            const ARA::ARADocumentControllerInstance* ctrl = nullptr;
-            std::promise<const ARA::ARADocumentControllerInstance*> p;
-            auto f = p.get_future();
+            auto p = std::make_shared<
+                std::promise<const ARA::ARADocumentControllerInstance*>>();
+            auto f = p->get_future();
 
             auto* proxy = active_proxy_;
             active_proxy_->ipc_connection_->dispatchToCreationThread(
-                [proxy, host_instance, properties, p = std::move(p)]() mutable {
-                    const ARA::ARADocumentControllerInstance* result =
+                [proxy, host_instance, properties, p]() mutable {
+                    p->set_value(
                         ARA::IPC::ARAIPCProxyPlugInCreateDocumentControllerWithDocument(
                             proxy->proxy_ref_,
                             proxy->ipc_factory_id_.c_str(),
                             host_instance,
-                            properties);
-                    p.set_value(result);
+                            properties));
                 });
 
-            ctrl = f.get();
+            const ARA::ARADocumentControllerInstance* ctrl = f.get();
             if (!ctrl) {
                 active_proxy_->bridge_.logger_.log(
                     "WARNING: createDocumentControllerWithDocument() via "

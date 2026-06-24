@@ -156,15 +156,15 @@ void AraFactoryProxy::setup_ipc(const ghc::filesystem::path& base_dir,
     // Connection creation thread) because remoteCall asserts
     // wasCreatedOnCurrentThread().
     {
-        std::promise<void> p;
-        auto f = p.get_future();
+        auto p = std::make_shared<std::promise<void>>();
+        auto f = p->get_future();
         ipc_connection_->dispatchToCreationThread(
-            [this, p = std::move(p)]() mutable {
+            [this, p]() mutable {
                 const size_t count =
                     ARA::IPC::ARAIPCProxyPlugInGetFactoriesCount(proxy_ref_);
                 for (size_t i = 0; i < count; ++i)
                     ARA::IPC::ARAIPCProxyPlugInGetFactoryAtIndex(proxy_ref_, i);
-                p.set_value();
+                p->set_value();
             });
         f.get();
     }
