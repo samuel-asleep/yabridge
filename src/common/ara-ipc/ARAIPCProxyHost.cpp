@@ -840,6 +840,8 @@ void ProxyHost::handleReceivedMessage (const MessageID messageID, const MessageD
             const ARADocumentControllerInstance** dcPtr = &documentControllerInstance;
             getConnection ()->dispatchToCreationThread ([factory, hostInstance, &properties, dcPtr, &done_sem] ()
             {
+                std::fprintf(stderr, "[ProxyHost] createDocumentController running on creation thread\n");
+                std::fflush(stderr);
                 *dcPtr = factory->createDocumentControllerWithDocument (hostInstance, &properties);
                 std::fprintf(stderr, "[ProxyHost] createDocumentControllerWithDocument returned: %p\n", (void*)*dcPtr);
                 std::fflush(stderr);
