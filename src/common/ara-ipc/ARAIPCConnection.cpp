@@ -648,6 +648,8 @@ void OtherThreadsMessageDispatcher::routeReceivedMessage (MessageID messageID, s
             message->_messageID = messageID;
             message->_decoder = std::move (decoder);
             message->_targetThread = targetThread;
+            std::fprintf(stderr, "[IPC OtherThreads] routing msgID=%d to thread %zu\n", (int)messageID, (size_t)targetThread);
+            std::fflush(stderr);
             _routeReceiveCondition.notify_all ();
             _routeLock.unlock ();
         }
@@ -661,6 +663,8 @@ void OtherThreadsMessageDispatcher::routeReceivedMessage (MessageID messageID, s
 
 void OtherThreadsMessageDispatcher::_processReceivedMessage (MessageID messageID, std::unique_ptr<const MessageDecoder> && decoder)
 {
+    std::fprintf(stderr, "[IPC OtherThreads] _processReceivedMessage msgID=%d\n", (int)messageID);
+    std::fflush(stderr);
     const auto previousRemoteTargetThread { _remoteTargetThread };
     ThreadRef remoteTargetThread;
     [[maybe_unused]] const auto success { decoder->readThreadRef (kSendThreadKey, &remoteTargetThread) };

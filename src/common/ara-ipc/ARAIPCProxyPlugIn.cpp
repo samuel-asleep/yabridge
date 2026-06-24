@@ -1451,6 +1451,8 @@ void ProxyPlugIn::handleReceivedMessage (const MessageID messageID, const Messag
     // ARAAudioAccessControllerInterface
     if (messageID == ARA_IPC_METHOD_ID (ARAAudioAccessControllerInterface, createAudioReaderForSource))
     {
+        std::fprintf(stderr, "[ProxyPlugIn] createAudioReaderForSource callback received\n");
+        std::fflush(stderr);
         ARAAudioAccessControllerHostRef controllerHostRef;
         ARAAudioSourceHostRef audioSourceHostRef;
         ARABool use64BitSamples;
