@@ -830,9 +830,28 @@ void ProxyHost::handleReceivedMessage (const MessageID messageID, const MessageD
             const auto hostInstance { new Host::DocumentControllerHostInstance { audioAccessController, archivingController,
                                                                                  contentAccessController, modelUpdateController, playbackController } };
 
+#if defined (__WINE__)
+            // createDocumentControllerWithDocument requires the 32MB Win32 creation
+            // thread stack (same reason as initializeARAWithConfiguration).
+            // Dispatch blocking to the creation thread via a semaphore.
+            sem_t done_sem;
+            sem_init (&done_sem, 0, 0);
+            const ARADocumentControllerInstance* documentControllerInstance = nullptr;
+            const ARADocumentControllerInstance** dcPtr = &documentControllerInstance;
+            getConnection ()->dispatchToCreationThread ([factory, hostInstance, &properties, dcPtr, &done_sem] ()
+            {
+                *dcPtr = factory->createDocumentControllerWithDocument (hostInstance, &properties);
+                std::fprintf(stderr, "[ProxyHost] createDocumentControllerWithDocument returned: %p\n", (void*)*dcPtr);
+                std::fflush(stderr);
+                sem_post (&done_sem);
+            });
+            sem_wait (&done_sem);
+            sem_destroy (&done_sem);
+#else
             auto documentControllerInstance { factory->createDocumentControllerWithDocument (hostInstance, &properties) };
             std::fprintf(stderr, "[ProxyHost] createDocumentControllerWithDocument returned: %p\n", (void*)documentControllerInstance);
             std::fflush(stderr);
+#endif
             ARA_VALIDATE_API_CONDITION (documentControllerInstance != nullptr);
             ARA_VALIDATE_API_INTERFACE (documentControllerInstance->documentControllerInterface, ARADocumentControllerInterface);
             auto documentController { new DocumentController (hostInstance, documentControllerInstance) };
