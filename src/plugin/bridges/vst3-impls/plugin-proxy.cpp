@@ -148,6 +148,16 @@ void AraFactoryProxy::setup_ipc(const ghc::filesystem::path& base_dir,
     bridge_.logger_.log(
         "NOTE: AraFactoryProxy ARA IPC ProxyPlugIn connected for factory '" +
         factory_id + "'");
+
+    // Prime the _factories cache in the ProxyPlugIn by fetching all
+    // factories from the Wine side.  ARAIPCProxyPlugInCreateDocumentController
+    // WithDocument looks up the factory by ID in this cache and returns null
+    // if it's not populated yet.
+    const size_t factory_count =
+        ARA::IPC::ARAIPCProxyPlugInGetFactoriesCount(proxy_ref_);
+    for (size_t i = 0; i < factory_count; ++i) {
+        ARA::IPC::ARAIPCProxyPlugInGetFactoryAtIndex(proxy_ref_, i);
+    }
 }
 
 constexpr char other_instance_message_id[] = "yabridge_other_instance";
