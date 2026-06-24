@@ -183,23 +183,11 @@ class AraFactoryProxy {
 
         // If the ARA IPC layer is active, delegate to ProxyPlugIn.
         if (active_proxy_->proxy_ref_) {
-            // initializeARA and all subsequent remoteCall-based operations
-            // must run on ipc_thread_ (the Connection creation thread).
-            auto p = std::make_shared<std::promise<void>>();
-            auto f = p->get_future();
-            auto* proxy = active_proxy_;
-            const ARA::ARAAPIGeneration gen =
+            ARA::IPC::ARAIPCProxyPlugInInitializeARA(
+                active_proxy_->proxy_ref_,
+                active_proxy_->ipc_factory_id_.c_str(),
                 config ? config->desiredApiGeneration
-                       : ARA::kARAAPIGeneration_2_0_Final;
-            proxy->ipc_connection_->dispatchToCreationThread(
-                [proxy, gen, p]() {
-                    ARA::IPC::ARAIPCProxyPlugInInitializeARA(
-                        proxy->proxy_ref_,
-                        proxy->ipc_factory_id_.c_str(),
-                        gen);
-                    p->set_value();
-                });
-            f.get();
+                       : ARA::kARAAPIGeneration_2_0_Final);
             return;
         }
 
@@ -256,22 +244,17 @@ class AraFactoryProxy {
             // thread (ipc_thread_) because remoteCall asserts
             // wasCreatedOnCurrentThread().  Dispatch via the Connection and
             // block the calling thread with a promise/future.
-            auto p = std::make_shared<
-                std::promise<const ARA::ARADocumentControllerInstance*>>();
-            auto f = p->get_future();
-
-            auto* proxy = active_proxy_;
-            active_proxy_->ipc_connection_->dispatchToCreationThread(
-                [proxy, host_instance, properties, p]() mutable {
-                    p->set_value(
-                        ARA::IPC::ARAIPCProxyPlugInCreateDocumentControllerWithDocument(
-                            proxy->proxy_ref_,
-                            proxy->ipc_factory_id_.c_str(),
-                            host_instance,
-                            properties));
-                });
-
-            const ARA::ARADocumentControllerInstance* ctrl = f.get();
+            // DocumentController constructor calls remoteCall which uses the
+            // OtherThreadsMessageDispatcher when not on the creation thread —
+            // that's fine since ARA_ENABLE_INTERNAL_ASSERTS=0.
+            // Wine callbacks during createDocumentControllerWithDocument
+            // arrive on the socket background thread and get routed back.
+            const ARA::ARADocumentControllerInstance* ctrl =
+                ARA::IPC::ARAIPCProxyPlugInCreateDocumentControllerWithDocument(
+                    active_proxy_->proxy_ref_,
+                    active_proxy_->ipc_factory_id_.c_str(),
+                    host_instance,
+                    properties);
             if (!ctrl) {
                 active_proxy_->bridge_.logger_.log(
                     "WARNING: createDocumentControllerWithDocument() via "

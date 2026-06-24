@@ -152,22 +152,11 @@ void AraFactoryProxy::setup_ipc(const ghc::filesystem::path& base_dir,
         factory_id + "'");
 
     // Prime the _factories cache in the ProxyPlugIn by fetching all
-    // factories from the Wine side.  This must run on ipc_thread_ (the
-    // Connection creation thread) because remoteCall asserts
-    // wasCreatedOnCurrentThread().
-    {
-        auto p = std::make_shared<std::promise<void>>();
-        auto f = p->get_future();
-        ipc_connection_->dispatchToCreationThread(
-            [this, p]() mutable {
-                const size_t count =
-                    ARA::IPC::ARAIPCProxyPlugInGetFactoriesCount(proxy_ref_);
-                for (size_t i = 0; i < count; ++i)
-                    ARA::IPC::ARAIPCProxyPlugInGetFactoryAtIndex(proxy_ref_, i);
-                p->set_value();
-            });
-        f.get();
-    }
+    // factories from the Wine side.
+    const size_t factory_count =
+        ARA::IPC::ARAIPCProxyPlugInGetFactoriesCount(proxy_ref_);
+    for (size_t i = 0; i < factory_count; ++i)
+        ARA::IPC::ARAIPCProxyPlugInGetFactoryAtIndex(proxy_ref_, i);
 }
 
 constexpr char other_instance_message_id[] = "yabridge_other_instance";
