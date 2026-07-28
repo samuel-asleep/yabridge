@@ -3,4 +3,6 @@
 .playwright-mcp/
 *.log
 builder/
-ARAPluginDemo-*
+ARAPluginDemo-*.env
+
+.env
