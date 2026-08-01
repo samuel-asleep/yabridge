@@ -1,0 +1,94 @@
+// yabridge: a Wine plugin bridge
+// Copyright (C) 2020-2026 Robbert van der Helm
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+#pragma once
+
+#include <pluginterfaces/base/funknown.h>
+
+#ifdef WITH_ARA
+#include <ARAVST3.h>
+#endif
+
+#include "../../common.h"
+#include "../base.h"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
+
+/**
+ * Detects whether an `IComponent` object supports the ARA plug-in entry point
+ * interfaces (`ARA::IPlugInEntryPoint` and `ARA::IPlugInEntryPoint2`).
+ *
+ * When ARA support is not compiled in (`WITH_ARA` not defined) this class
+ * still exists so that `Vst3PluginProxy::ConstructArgs` can carry the
+ * detection result across the wire and the host can log that the plugin
+ * advertises ARA capability.
+ *
+ * Actual ARA binding (calling `bindToDocumentControllerWithRoles`) lives
+ * outside this class and will be implemented in a later stage.
+ */
+class YaPlugInEntryPoint {
+   public:
+    struct ConstructArgs {
+        ConstructArgs() noexcept;
+
+        /**
+         * Query `IPlugInEntryPoint` and `IPlugInEntryPoint2` support from an
+         * existing object.  When `WITH_ARA` is not defined both fields are
+         * always false.
+         */
+        ConstructArgs(Steinberg::IPtr<Steinberg::FUnknown> object) noexcept;
+
+        /**
+         * Whether the object supports `ARA::IPlugInEntryPoint` (ARA 1,
+         * deprecated but still encountered in the wild).
+         */
+        bool supports_plug_in_entry_point = false;
+
+        /**
+         * Whether the object supports `ARA::IPlugInEntryPoint2` (ARA 2+,
+         * the interface that should actually be used).
+         */
+        bool supports_plug_in_entry_point_2 = false;
+
+        template <typename S>
+        void serialize(S& s) {
+            s.value1b(supports_plug_in_entry_point);
+            s.value1b(supports_plug_in_entry_point_2);
+        }
+    };
+
+    explicit YaPlugInEntryPoint(ConstructArgs&& args) noexcept;
+    virtual ~YaPlugInEntryPoint() noexcept = default;
+
+    inline bool ara_supported() const noexcept {
+        return arguments_.supports_plug_in_entry_point_2 ||
+               arguments_.supports_plug_in_entry_point;
+    }
+
+    inline bool supports_plug_in_entry_point() const noexcept {
+        return arguments_.supports_plug_in_entry_point;
+    }
+
+    inline bool supports_plug_in_entry_point_2() const noexcept {
+        return arguments_.supports_plug_in_entry_point_2;
+    }
+
+   protected:
+    ConstructArgs arguments_;
+};
+
+#pragma GCC diagnostic pop

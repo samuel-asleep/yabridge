@@ -74,7 +74,12 @@ Vst3PluginInterfaces::Vst3PluginInterfaces(
       process_context_requirements(object),
       program_list_data(object),
       unit_info(object),
-      xml_representation_controller(object) {}
+      xml_representation_controller(object) {
+#ifdef WITH_ARA
+    plug_in_entry_point = Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>(object);
+    plug_in_entry_point_2 = Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint2>(object);
+#endif
+}
 
 Vst3PluginInstance::Vst3PluginInstance(
     Steinberg::IPtr<Steinberg::FUnknown> object) noexcept
@@ -216,8 +221,22 @@ void Vst3Bridge::run() {
                 // This is where the magic happens. Here we deduce which
                 // interfaces are supported by this object so we can create
                 // a one-to-one proxy of it.
-                return Vst3PluginProxy::ConstructArgs(instance.object,
-                                                      instance_id);
+                Vst3PluginProxy::ConstructArgs args(instance.object,
+                                                    instance_id);
+
+#ifdef WITH_ARA
+                if (instance.interfaces.plug_in_entry_point_2 ||
+                    instance.interfaces.plug_in_entry_point) {
+                    std::cerr << "[ARA] plugin instance " << instance_id
+                              << " supports ARA"
+                              << (instance.interfaces.plug_in_entry_point_2
+                                      ? "2 (IPlugInEntryPoint2)"
+                                      : "1 (IPlugInEntryPoint only)")
+                              << std::endl;
+                }
+#endif
+
+                return args;
             },
             [&](const Vst3PluginProxy::Destruct& request)
                 -> Vst3PluginProxy::Destruct::Response {

@@ -1,0 +1,8 @@
+[wrap-git]
+url = https://github.com/Celemony/ARA_API.git
+revision = releases/2.3.0
+depth = 1
+patch_directory = ara
+
+[provide]
+ara = ara_dep

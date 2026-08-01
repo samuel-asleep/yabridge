@@ -20,6 +20,13 @@ option(
 )
 
 option(
+  'ara',
+  type : 'boolean',
+  value : false,
+  description : 'Enable ARA (Audio Random Access) detection scaffolding. Requires VST3. Full ARA support is not yet implemented.'
+)
+
+option(
   'winedbg',
   type : 'boolean',
   value : false,

@@ -45,6 +45,14 @@ Vst3PluginProxyImpl::Vst3PluginProxyImpl(Vst3PluginBridge& bridge,
                                          Vst3PluginProxy::ConstructArgs&& args)
     : Vst3PluginProxy(std::move(args)), bridge_(bridge) {
     bridge.register_plugin_proxy(*this);
+
+    if (ara_supported()) {
+        bridge_.logger_.log(
+            std::string("[ARA] plugin instance supports ARA") +
+            (supports_plug_in_entry_point_2()
+                 ? "2 (IPlugInEntryPoint2)"
+                 : "1 only -- IPlugInEntryPoint2 not detected"));
+    }
 }
 
 Vst3PluginProxyImpl::~Vst3PluginProxyImpl() noexcept {

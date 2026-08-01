@@ -34,6 +34,7 @@
 #include "plugin/note-expression-controller.h"
 #include "plugin/note-expression-physical-ui-mapping.h"
 #include "plugin/parameter-function-name.h"
+#include "plugin/plug-in-entry-point.h"
 #include "plugin/plugin-base.h"
 #include "plugin/prefetchable-support.h"
 #include "plugin/process-context-requirements.h"
@@ -83,6 +84,7 @@ class Vst3PluginProxy : public YaAudioPresentationLatency,
                         public YaNoteExpressionController,
                         public YaNoteExpressionPhysicalUIMapping,
                         public YaParameterFunctionName,
+                        public YaPlugInEntryPoint,
                         public YaPluginBase,
                         public YaPrefetchableSupport,
                         public YaProcessContextRequirements,
@@ -128,6 +130,7 @@ class Vst3PluginProxy : public YaAudioPresentationLatency,
         YaNoteExpressionPhysicalUIMapping::ConstructArgs
             note_expression_physical_ui_mapping_args;
         YaParameterFunctionName::ConstructArgs parameter_function_name_args;
+        YaPlugInEntryPoint::ConstructArgs plug_in_entry_point_args;
         YaPluginBase::ConstructArgs plugin_base_args;
         YaPrefetchableSupport::ConstructArgs prefetchable_support_args;
         YaProcessContextRequirements::ConstructArgs
@@ -156,6 +159,7 @@ class Vst3PluginProxy : public YaAudioPresentationLatency,
             s.object(note_expression_controller_args);
             s.object(note_expression_physical_ui_mapping_args);
             s.object(parameter_function_name_args);
+            s.object(plug_in_entry_point_args);
             s.object(plugin_base_args);
             s.object(prefetchable_support_args);
             s.object(process_context_requirements_args);

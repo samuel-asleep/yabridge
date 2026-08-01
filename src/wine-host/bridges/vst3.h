@@ -23,6 +23,10 @@
 
 #include <public.sdk/source/vst/hosting/module.h>
 
+#ifdef WITH_ARA
+#include <ARAVST3.h>
+#endif
+
 #include "../../common/communication/vst3.h"
 #include "../../common/configuration.h"
 #include "../../common/mutual-recursion.h"
@@ -94,6 +98,11 @@ struct Vst3PluginInterfaces {
     Steinberg::FUnknownPtr<Steinberg::Vst::IUnitInfo> unit_info;
     Steinberg::FUnknownPtr<Steinberg::Vst::IXmlRepresentationController>
         xml_representation_controller;
+
+#ifdef WITH_ARA
+    Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint> plug_in_entry_point;
+    Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint2> plug_in_entry_point_2;
+#endif
 };
 
 /**
