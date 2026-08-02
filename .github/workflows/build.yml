@@ -20,7 +20,7 @@ defaults:
 
 jobs:
   build-focal:
-    name: Build yabridge
+    name: Build on Ubuntu 20.04
     runs-on: ubuntu-latest
     container: robbert/docker-yabridge:focal
     outputs:
