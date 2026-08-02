@@ -3,6 +3,11 @@
 [![Automated builds](https://github.com/robbert-vdh/yabridge/workflows/Automated%20builds/badge.svg?branch=master&event=push)](https://github.com/robbert-vdh/yabridge/actions?query=workflow%3A%22Automated+builds%22+branch%3Amaster)
 [![Discord](https://img.shields.io/discord/786993304197267527.svg?label=Discord&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/pyNeweqadf)
 
+> [!CAUTION]
+> This is the only official yabridge page. If you came from a website claiming
+> to be related to yabridge, then that website was likely fake and trying to
+> spread malware.
+
 Yet Another way to use Windows audio plugins on Linux. Yabridge seamlessly
 supports using both 32-bit and 64-bit Windows VST2, VST3, and CLAP plugins in
 64-bit Linux plugin hosts as if they were native plugins, with optional support
