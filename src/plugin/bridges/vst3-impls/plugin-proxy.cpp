@@ -1372,3 +1372,96 @@ void Vst3PluginProxyImpl::clear_bus_cache() noexcept {
         processing_bus_cache_.emplace();
     }
 }
+
+#ifdef WITH_ARA
+
+const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
+    if (ara_factory_cache_) {
+        return &ara_factory_c_struct_;
+    }
+
+    auto response = bridge_.send_message(YaPlugInEntryPoint::GetFactory{
+        .instance_id = instance_id()});
+
+    return std::visit(
+        overload{
+            [&](YaAraFactory&& factory) -> const ARA::ARAFactory* {
+                ara_factory_cache_ = std::move(factory);
+                ara_factory_c_struct_ = ara_factory_cache_->to_ara_factory();
+                return &ara_factory_c_struct_;
+            },
+            [&](const UniversalTResult&) -> const ARA::ARAFactory* {
+                bridge_.logger_.log(
+                    "WARNING: IPlugInEntryPoint::getFactory() returned null");
+                return nullptr;
+            }},
+        std::move(response));
+}
+
+const ARA::ARAPlugInExtensionInstance* PLUGIN_API
+Vst3PluginProxyImpl::bindToDocumentController(
+    ARA::ARADocumentControllerRef documentControllerRef) {
+    constexpr ARA::ARAInt32 legacy =
+        ARA::kARAPlaybackRendererRole | ARA::kARAEditorRendererRole |
+        ARA::kARAEditorViewRole;
+    return bindToDocumentControllerWithRoles(
+        documentControllerRef,
+        static_cast<ARA::ARAPlugInInstanceRoleFlags>(legacy),
+        static_cast<ARA::ARAPlugInInstanceRoleFlags>(legacy));
+}
+
+const ARA::ARAPlugInExtensionInstance* PLUGIN_API
+Vst3PluginProxyImpl::bindToDocumentControllerWithRoles(
+    ARA::ARADocumentControllerRef documentControllerRef,
+    ARA::ARAPlugInInstanceRoleFlags knownRoles,
+    ARA::ARAPlugInInstanceRoleFlags assignedRoles) {
+    if (ara_extension_cache_) {
+        return &ara_extension_c_struct_;
+    }
+
+    {
+        std::ostringstream msg;
+        msg << "[ARA] instance " << instance_id()
+            << ": bindToDocumentControllerWithRoles(knownRoles=0x" << std::hex
+            << static_cast<ARA::ARAInt32>(knownRoles) << ", assignedRoles=0x"
+            << static_cast<ARA::ARAInt32>(assignedRoles) << ")";
+        bridge_.logger_.log(msg.str());
+    }
+
+    const native_size_t dc_id =
+        reinterpret_cast<native_size_t>(documentControllerRef);
+
+    YaPlugInEntryPoint::BindToDocumentControllerWithRoles::Response response;
+    try {
+        response = bridge_.send_message(
+            YaPlugInEntryPoint::BindToDocumentControllerWithRoles{
+                .instance_id = instance_id(),
+                .ara_dc_id = dc_id,
+                .known_roles = static_cast<ARA::ARAInt32>(knownRoles),
+                .assigned_roles = static_cast<ARA::ARAInt32>(assignedRoles)});
+    } catch (...) {
+        bridge_.logger_.log(
+            "WARNING: IPC failure in "
+            "bindToDocumentControllerWithRoles(), returning null");
+        return nullptr;
+    }
+
+    return std::visit(
+        overload{
+            [&](YaAraPlugInExtensionInstance&& ext)
+                -> const ARA::ARAPlugInExtensionInstance* {
+                ara_extension_cache_ = std::move(ext);
+                ara_extension_c_struct_ = {};
+                return &ara_extension_c_struct_;
+            },
+            [&](const UniversalTResult&)
+                -> const ARA::ARAPlugInExtensionInstance* {
+                bridge_.logger_.log(
+                    "WARNING: bindToDocumentControllerWithRoles() returned "
+                    "null from Wine side");
+                return nullptr;
+            }},
+        std::move(response));
+}
+
+#endif  // WITH_ARA

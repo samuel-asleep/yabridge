@@ -303,6 +303,26 @@ class Vst3PluginProxyImpl : public Vst3PluginProxy {
     getXmlRepresentationStream(Steinberg::Vst::RepresentationInfo& info /*in*/,
                                Steinberg::IBStream* stream /*out*/) override;
 
+#ifdef WITH_ARA
+    // From `ARA::IPlugInEntryPoint`
+    const ARA::ARAFactory* PLUGIN_API getFactory() override;
+    const ARA::ARAPlugInExtensionInstance* PLUGIN_API
+    bindToDocumentController(
+        ARA::ARADocumentControllerRef documentControllerRef) override;
+
+    // From `ARA::IPlugInEntryPoint2`
+    const ARA::ARAPlugInExtensionInstance* PLUGIN_API
+    bindToDocumentControllerWithRoles(
+        ARA::ARADocumentControllerRef documentControllerRef,
+        ARA::ARAPlugInInstanceRoleFlags knownRoles,
+        ARA::ARAPlugInInstanceRoleFlags assignedRoles) override;
+
+    std::optional<YaAraFactory> ara_factory_cache_;
+    ARA::ARAFactory ara_factory_c_struct_{};
+    std::optional<YaAraPlugInExtensionInstance> ara_extension_cache_;
+    ARA::ARAPlugInExtensionInstance ara_extension_c_struct_{};
+#endif
+
     /**
      * The component handler the host passed to us during
      * `IEditController::setComponentHandler()`. When the plugin makes a

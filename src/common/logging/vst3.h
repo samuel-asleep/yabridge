@@ -188,6 +188,14 @@ class Vst3Logger {
         bool is_host_plugin,
         const YaXmlRepresentationController::GetXmlRepresentationStream&);
 
+#ifdef WITH_ARA
+    bool log_request(bool is_host_plugin,
+                     const YaPlugInEntryPoint::GetFactory&);
+    bool log_request(
+        bool is_host_plugin,
+        const YaPlugInEntryPoint::BindToDocumentControllerWithRoles&);
+#endif
+
     // Audio processor control messages
     bool log_request(bool is_host_plugin,
                      const YaAudioProcessor::SetBusArrangements&);
@@ -323,6 +331,15 @@ class Vst3Logger {
     void log_response(bool is_host_plugin,
                       const YaXmlRepresentationController::
                           GetXmlRepresentationStreamResponse&);
+
+#ifdef WITH_ARA
+    void log_response(
+        bool is_host_plugin,
+        const std::variant<YaAraFactory, UniversalTResult>&);
+    void log_response(
+        bool is_host_plugin,
+        const std::variant<YaAraPlugInExtensionInstance, UniversalTResult>&);
+#endif
 
     // Audio processor control message responses
     void log_response(bool is_host_plugin,

@@ -19,6 +19,9 @@
 #include "../../bitsery/ext/in-place-variant.h"
 
 #include "../common.h"
+#ifdef WITH_ARA
+#include <ARAVST3.h>
+#endif
 #include "plugin/audio-presentation-latency.h"
 #include "plugin/audio-processor.h"
 #include "plugin/automation-state.h"
@@ -69,7 +72,13 @@
  * implements any interface such an object might also implement, we can allow
  * perfect proxying behaviour for connecting components.
  */
+#ifdef WITH_ARA
 class Vst3PluginProxy : public YaAudioPresentationLatency,
+                        public ARA::IPlugInEntryPoint,
+                        public ARA::IPlugInEntryPoint2,
+#else
+class Vst3PluginProxy : public YaAudioPresentationLatency,
+#endif
                         public YaAudioProcessor,
                         public YaAutomationState,
                         public YaComponent,

@@ -1926,3 +1926,62 @@ void Vst3Logger::log_response(bool is_host_plugin,
         }
     });
 }
+
+#ifdef WITH_ARA
+
+bool Vst3Logger::log_request(bool is_host_plugin,
+                             const YaPlugInEntryPoint::GetFactory& request) {
+    return log_request_base(is_host_plugin, [&](auto& message) {
+        message << request.instance_id << ": IPlugInEntryPoint::getFactory()";
+    });
+}
+
+bool Vst3Logger::log_request(
+    bool is_host_plugin,
+    const YaPlugInEntryPoint::BindToDocumentControllerWithRoles& request) {
+    return log_request_base(is_host_plugin, [&](auto& message) {
+        message << request.instance_id
+                << ": IPlugInEntryPoint2::bindToDocumentControllerWithRoles("
+                   "ara_dc_id="
+                << request.ara_dc_id << ", knownRoles=0x" << std::hex
+                << request.known_roles << ", assignedRoles=0x"
+                << request.assigned_roles << ")";
+    });
+}
+
+void Vst3Logger::log_response(
+    bool is_host_plugin,
+    const std::variant<YaAraFactory, UniversalTResult>& response) {
+    log_response_base(is_host_plugin, [&](auto& message) {
+        std::visit(
+            overload{[&](const YaAraFactory& factory) {
+                         message << "<ARAFactory factoryID=\"" << factory.factoryID
+                                 << "\">";
+                     },
+                     [&](const UniversalTResult& result) {
+                         message << result.string();
+                     }},
+            response);
+    });
+}
+
+void Vst3Logger::log_response(
+    bool is_host_plugin,
+    const std::variant<YaAraPlugInExtensionInstance, UniversalTResult>&
+        response) {
+    log_response_base(is_host_plugin, [&](auto& message) {
+        std::visit(
+            overload{[&](const YaAraPlugInExtensionInstance& ext) {
+                         message << "ARAPlugInExtensionInstance { playback="
+                                 << ext.has_playback_renderer
+                                 << ", editorRenderer=" << ext.has_editor_renderer
+                                 << ", editorView=" << ext.has_editor_view << " }";
+                     },
+                     [&](const UniversalTResult& result) {
+                         message << result.string();
+                     }},
+            response);
+    });
+}
+
+#endif  // WITH_ARA

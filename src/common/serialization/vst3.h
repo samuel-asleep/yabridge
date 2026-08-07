@@ -135,7 +135,13 @@ using Vst3ControlRequest =
                  YaUnitInfo::SelectUnit,
                  YaUnitInfo::GetUnitByBus,
                  YaUnitInfo::SetUnitProgramData,
-                 YaXmlRepresentationController::GetXmlRepresentationStream>;
+                 YaXmlRepresentationController::GetXmlRepresentationStream
+#ifdef WITH_ARA
+                 ,
+                 YaPlugInEntryPoint::GetFactory,
+                 YaPlugInEntryPoint::BindToDocumentControllerWithRoles
+#endif
+                 >;
 
 template <typename S>
 void serialize(S& s, Vst3ControlRequest& payload) {

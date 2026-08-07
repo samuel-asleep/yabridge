@@ -198,6 +198,17 @@ Vst3PluginProxy::Vst3PluginProxy(ConstructArgs&& args) noexcept
                         Steinberg::Vst::IXmlRepresentationController)
     }
 
+#ifdef WITH_ARA
+    if (YaPlugInEntryPoint::supports_plug_in_entry_point_2()) {
+        QUERY_INTERFACE(_iid, obj, ARA::IPlugInEntryPoint2::iid,
+                        ARA::IPlugInEntryPoint2)
+    }
+    if (YaPlugInEntryPoint::supports_plug_in_entry_point()) {
+        QUERY_INTERFACE(_iid, obj, ARA::IPlugInEntryPoint::iid,
+                        ARA::IPlugInEntryPoint)
+    }
+#endif
+
     *obj = nullptr;
     return Steinberg::kNoInterface;
 }

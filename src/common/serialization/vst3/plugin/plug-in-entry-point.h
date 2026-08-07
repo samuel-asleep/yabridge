@@ -19,7 +19,13 @@
 #include <pluginterfaces/base/funknown.h>
 
 #ifdef WITH_ARA
+#include <variant>
+
 #include <ARAVST3.h>
+
+#include "../../../bitsery/ext/in-place-variant.h"
+
+#include "ara-factory.h"
 #endif
 
 #include "../../common.h"
@@ -87,8 +93,55 @@ class YaPlugInEntryPoint {
         return arguments_.supports_plug_in_entry_point_2;
     }
 
+#ifdef WITH_ARA
+    struct GetFactory {
+        using Response = std::variant<YaAraFactory, UniversalTResult>;
+
+        native_size_t instance_id;
+
+        template <typename S>
+        void serialize(S& s) {
+            s.value8b(instance_id);
+        }
+    };
+
+    struct BindToDocumentControllerWithRoles {
+        using Response =
+            std::variant<YaAraPlugInExtensionInstance, UniversalTResult>;
+
+        native_size_t instance_id;
+        native_size_t ara_dc_id;
+        ARA::ARAInt32 known_roles;
+        ARA::ARAInt32 assigned_roles;
+
+        template <typename S>
+        void serialize(S& s) {
+            s.value8b(instance_id);
+            s.value8b(ara_dc_id);
+            s.value4b(known_roles);
+            s.value4b(assigned_roles);
+        }
+    };
+#endif  // WITH_ARA
+
    protected:
     ConstructArgs arguments_;
 };
 
 #pragma GCC diagnostic pop
+
+#ifdef WITH_ARA
+
+template <typename S>
+void serialize(S& s, std::variant<YaAraFactory, UniversalTResult>& result) {
+    s.ext(result, bitsery::ext::InPlaceVariant{});
+}
+
+template <typename S>
+void serialize(
+    S& s,
+    std::variant<YaAraPlugInExtensionInstance, UniversalTResult>& result) {
+    s.ext(result, bitsery::ext::InPlaceVariant{});
+}
+
+#endif  // WITH_ARA

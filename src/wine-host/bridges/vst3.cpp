@@ -1500,6 +1500,57 @@ void Vst3Bridge::run() {
                                         })
                             .get();
                     },
+#ifdef WITH_ARA
+        [&](YaPlugInEntryPoint::GetFactory& request)
+            -> YaPlugInEntryPoint::GetFactory::Response {
+            const auto& [instance, _] = get_instance(request.instance_id);
+            if (instance.interfaces.plug_in_entry_point) {
+                const ARA::ARAFactory* factory =
+                    instance.interfaces.plug_in_entry_point->getFactory();
+                if (factory) {
+                    return from_ara_factory(factory);
+                }
+            }
+            return UniversalTResult(Steinberg::kResultFalse);
+        },
+        [&](YaPlugInEntryPoint::BindToDocumentControllerWithRoles& request)
+            -> YaPlugInEntryPoint::BindToDocumentControllerWithRoles::Response {
+            const auto& [instance, _] = get_instance(request.instance_id);
+
+            const ARA::ARADocumentControllerRef dc_ref =
+                reinterpret_cast<ARA::ARADocumentControllerRef>(
+                    request.ara_dc_id);
+
+            const ARA::ARAPlugInExtensionInstance* ext = nullptr;
+            if (instance.interfaces.plug_in_entry_point_2) {
+                ext = instance.interfaces.plug_in_entry_point_2
+                          ->bindToDocumentControllerWithRoles(
+                              dc_ref,
+                              static_cast<ARA::ARAPlugInInstanceRoleFlags>(
+                                  request.known_roles),
+                              static_cast<ARA::ARAPlugInInstanceRoleFlags>(
+                                  request.assigned_roles));
+            } else if (instance.interfaces.plug_in_entry_point) {
+                constexpr ARA::ARAInt32 legacy =
+                    ARA::kARAPlaybackRendererRole |
+                    ARA::kARAEditorRendererRole | ARA::kARAEditorViewRole;
+                if ((request.known_roles & ~legacy) == 0) {
+                    ext = instance.interfaces.plug_in_entry_point
+                              ->bindToDocumentController(dc_ref);
+                }
+            }
+
+            if (!ext) {
+                return UniversalTResult(Steinberg::kResultFalse);
+            }
+
+            return YaAraPlugInExtensionInstance{
+                .has_playback_renderer =
+                    ext->playbackRendererInterface != nullptr,
+                .has_editor_renderer = ext->editorRendererInterface != nullptr,
+                .has_editor_view = ext->editorViewInterface != nullptr};
+        },
+#endif  // WITH_ARA
         });
 }
 

@@ -127,6 +127,7 @@ if with_vst3
     '../common/serialization/vst3/plugin/note-expression-physical-ui-mapping.cpp',
     '../common/serialization/vst3/plugin/parameter-function-name.cpp',
     '../common/serialization/vst3/plugin/ara-iids.cpp',
+    '../common/serialization/vst3/plugin/ara-factory.cpp',
     '../common/serialization/vst3/plugin/plug-in-entry-point.cpp',
     '../common/serialization/vst3/plugin/plugin-base.cpp',
     '../common/serialization/vst3/plugin/prefetchable-support.cpp',
