@@ -62,6 +62,10 @@ Vst3PluginProxyImpl::~Vst3PluginProxyImpl() noexcept {
     bridge_.send_message(
         Vst3PluginProxy::Destruct{.instance_id = instance_id()});
     bridge_.unregister_plugin_proxy(*this);
+#ifdef WITH_ARA
+    if (ara_factory_cache_)
+        ara_factory_cache_->unregister_factory();
+#endif
 }
 
 tresult PLUGIN_API
@@ -1375,19 +1379,40 @@ void Vst3PluginProxyImpl::clear_bus_cache() noexcept {
 
 #ifdef WITH_ARA
 
+#include "../../../common/serialization/vst3/ara-document-controller.h"
+#include "ara-document-controller-proxy.h"
+
 const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
     if (ara_factory_cache_) {
         return &ara_factory_c_struct_;
     }
 
-    auto response = bridge_.send_message(YaPlugInEntryPoint::GetFactory{
-        .instance_id = instance_id()});
+    YaPlugInEntryPoint::GetFactory::Response response;
+    try {
+        response = bridge_.send_message(YaPlugInEntryPoint::GetFactory{
+            .instance_id = instance_id()});
+    } catch (...) {
+        bridge_.logger_.log(
+            "WARNING: IPC failure in IPlugInEntryPoint::getFactory(), "
+            "returning null");
+        return nullptr;
+    }
 
     return std::visit(
         overload{
             [&](YaAraFactory&& factory) -> const ARA::ARAFactory* {
                 ara_factory_cache_ = std::move(factory);
-                ara_factory_c_struct_ = ara_factory_cache_->to_ara_factory();
+                ara_factory_c_struct_ = ara_factory_cache_->to_ara_factory(
+                    [this](
+                        const ARA::ARADocumentControllerHostInstance*
+                            hostInstance,
+                        const ARA::ARADocumentProperties* properties,
+                        native_size_t ara_dc_id)
+                        -> const ARA::ARADocumentControllerInstance* {
+                        return create_ara_document_controller(hostInstance,
+                                                              properties,
+                                                              ara_dc_id);
+                    });
                 return &ara_factory_c_struct_;
             },
             [&](const UniversalTResult&) -> const ARA::ARAFactory* {
@@ -1398,16 +1423,55 @@ const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
         std::move(response));
 }
 
+const ARA::ARADocumentControllerInstance*
+Vst3PluginProxyImpl::create_ara_document_controller(
+    const ARA::ARADocumentControllerHostInstance* hostInstance,
+    const ARA::ARADocumentProperties* properties,
+    native_size_t ara_dc_id) {
+    const std::string doc_name =
+        (properties && properties->name) ? properties->name : "";
+    const std::string factory_id =
+        ara_factory_cache_ ? ara_factory_cache_->factoryID : "";
+
+    {
+        std::ostringstream msg;
+        msg << "[ARA] instance " << instance_id()
+            << ": createDocumentControllerWithDocument(name=\"" << doc_name
+            << "\", factoryID=\"" << factory_id << "\")";
+        bridge_.logger_.log(msg.str());
+    }
+
+    (void)hostInstance;
+
+    auto response = bridge_.send_message(YaAra::CreateDocumentController{
+        .instance_id = instance_id(),
+        .ara_dc_id = ara_dc_id,
+        .factory_id = factory_id,
+        .document_properties = YaAraDocumentProperties{.name = doc_name}});
+
+    return std::visit(
+        overload{
+            [&](uint64_t /*wine_dc_ref*/)
+                -> const ARA::ARADocumentControllerInstance* {
+                return bridge_.register_ara_document_controller(ara_dc_id);
+            },
+            [&](const UniversalTResult&)
+                -> const ARA::ARADocumentControllerInstance* {
+                bridge_.logger_.log(
+                    "WARNING: createDocumentControllerWithDocument() "
+                    "returned null from Wine side");
+                return nullptr;
+            }},
+        std::move(response));
+}
+
 const ARA::ARAPlugInExtensionInstance* PLUGIN_API
 Vst3PluginProxyImpl::bindToDocumentController(
     ARA::ARADocumentControllerRef documentControllerRef) {
-    constexpr ARA::ARAInt32 legacy =
-        ARA::kARAPlaybackRendererRole | ARA::kARAEditorRendererRole |
-        ARA::kARAEditorViewRole;
     return bindToDocumentControllerWithRoles(
         documentControllerRef,
-        static_cast<ARA::ARAPlugInInstanceRoleFlags>(legacy),
-        static_cast<ARA::ARAPlugInInstanceRoleFlags>(legacy));
+        static_cast<ARA::ARAPlugInInstanceRoleFlags>(kARALegacyRoles),
+        static_cast<ARA::ARAPlugInInstanceRoleFlags>(kARALegacyRoles));
 }
 
 const ARA::ARAPlugInExtensionInstance* PLUGIN_API
@@ -1415,7 +1479,13 @@ Vst3PluginProxyImpl::bindToDocumentControllerWithRoles(
     ARA::ARADocumentControllerRef documentControllerRef,
     ARA::ARAPlugInInstanceRoleFlags knownRoles,
     ARA::ARAPlugInInstanceRoleFlags assignedRoles) {
-    if (ara_extension_cache_) {
+    const native_size_t dc_id =
+        reinterpret_cast<native_size_t>(documentControllerRef);
+
+    if (ara_extension_cache_ && ara_bound_dc_id_ == dc_id &&
+        ara_bound_known_roles_ == static_cast<ARA::ARAInt32>(knownRoles) &&
+        ara_bound_assigned_roles_ ==
+            static_cast<ARA::ARAInt32>(assignedRoles)) {
         return &ara_extension_c_struct_;
     }
 
@@ -1427,9 +1497,6 @@ Vst3PluginProxyImpl::bindToDocumentControllerWithRoles(
             << static_cast<ARA::ARAInt32>(assignedRoles) << ")";
         bridge_.logger_.log(msg.str());
     }
-
-    const native_size_t dc_id =
-        reinterpret_cast<native_size_t>(documentControllerRef);
 
     YaPlugInEntryPoint::BindToDocumentControllerWithRoles::Response response;
     try {
@@ -1451,7 +1518,15 @@ Vst3PluginProxyImpl::bindToDocumentControllerWithRoles(
             [&](YaAraPlugInExtensionInstance&& ext)
                 -> const ARA::ARAPlugInExtensionInstance* {
                 ara_extension_cache_ = std::move(ext);
+                ara_bound_dc_id_ = dc_id;
+                ara_bound_known_roles_ = static_cast<ARA::ARAInt32>(knownRoles);
+                ara_bound_assigned_roles_ =
+                    static_cast<ARA::ARAInt32>(assignedRoles);
+
                 ara_extension_c_struct_ = {};
+                ara_extension_c_struct_.structSize =
+                    ARA_IMPLEMENTED_STRUCT_SIZE(ARAPlugInExtensionInstance,
+                                               editorViewInterface);
                 return &ara_extension_c_struct_;
             },
             [&](const UniversalTResult&)

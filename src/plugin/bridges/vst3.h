@@ -27,6 +27,9 @@
 
 // Forward declarations
 class Vst3PluginProxyImpl;
+#ifdef WITH_ARA
+class AraDocumentControllerProxy;
+#endif
 
 /**
  * This handles the communication between the native host and a VST3 plugin
@@ -195,6 +198,30 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      * `PluginBridge::generic_logger`.
      */
     Vst3Logger logger_;
+
+#ifdef WITH_ARA
+    /**
+     * Create a document controller proxy for the given DC ID and store it.
+     * Returns a pointer to the stored proxy's `ARADocumentControllerInstance`.
+     * The proxy is owned by this bridge for the lifetime of the ARA session.
+     */
+    const ARA::ARADocumentControllerInstance* register_ara_document_controller(
+        native_size_t ara_dc_id);
+
+    /**
+     * Remove and destroy the document controller proxy for the given DC ID.
+     */
+    void unregister_ara_document_controller(native_size_t ara_dc_id);
+
+    /**
+     * All active ARA document controller proxies, keyed by their ara_dc_id.
+     */
+    std::unordered_map<native_size_t,
+                       std::unique_ptr<class AraDocumentControllerProxy>>
+        ara_document_controllers_;
+    std::mutex ara_document_controllers_mutex_;
+    std::atomic<native_size_t> next_ara_dc_id_{1};
+#endif
 
    private:
     /**

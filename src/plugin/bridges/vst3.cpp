@@ -482,3 +482,29 @@ void Vst3PluginBridge::unregister_plugin_proxy(
         sockets_.remove_audio_processor(proxy_object.instance_id());
     }
 }
+
+#ifdef WITH_ARA
+
+#include "vst3-impls/ara-document-controller-proxy.h"
+
+const ARA::ARADocumentControllerInstance*
+Vst3PluginBridge::register_ara_document_controller(native_size_t ara_dc_id) {
+    auto proxy = std::make_unique<AraDocumentControllerProxy>(*this, ara_dc_id);
+    const ARA::ARADocumentControllerInstance* instance =
+        &proxy->ara_dc_instance();
+
+    std::lock_guard lock(ara_document_controllers_mutex_);
+    ara_document_controllers_.emplace(ara_dc_id, std::move(proxy));
+    return instance;
+}
+
+void Vst3PluginBridge::unregister_ara_document_controller(
+    native_size_t ara_dc_id) {
+    std::lock_guard lock(ara_document_controllers_mutex_);
+    if (ara_document_controllers_.erase(ara_dc_id) == 0) {
+        logger_.log("WARNING: unregister_ara_document_controller() called with "
+                    "unknown ara_dc_id");
+    }
+}
+
+#endif  // WITH_ARA

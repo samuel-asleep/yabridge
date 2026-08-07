@@ -317,10 +317,12 @@ class Vst3PluginProxyImpl : public Vst3PluginProxy {
         ARA::ARAPlugInInstanceRoleFlags knownRoles,
         ARA::ARAPlugInInstanceRoleFlags assignedRoles) override;
 
-    std::optional<YaAraFactory> ara_factory_cache_;
-    ARA::ARAFactory ara_factory_c_struct_{};
-    std::optional<YaAraPlugInExtensionInstance> ara_extension_cache_;
-    ARA::ARAPlugInExtensionInstance ara_extension_c_struct_{};
+    // Helper used as the ARAFactory::createDocumentControllerWithDocument
+    // callback for the IPlugInEntryPoint path.
+    const ARA::ARADocumentControllerInstance* create_ara_document_controller(
+        const ARA::ARADocumentControllerHostInstance* hostInstance,
+        const ARA::ARADocumentProperties* properties,
+        native_size_t ara_dc_id);
 #endif
 
     /**
@@ -588,4 +590,18 @@ class Vst3PluginProxyImpl : public Vst3PluginProxy {
      */
     FunctionResultCache function_result_cache_;
     std::mutex function_result_cache_mutex_;
+
+#ifdef WITH_ARA
+    // ara_factory_c_struct_ contains const char* pointers into ara_factory_cache_
+    // string fields. ara_factory_cache_ must not be destroyed, moved, or
+    // reassigned while ara_factory_c_struct_ is in use.
+    std::optional<YaAraFactory> ara_factory_cache_;
+    ARA::ARAFactory ara_factory_c_struct_{};
+    std::optional<YaAraPlugInExtensionInstance> ara_extension_cache_;
+    ARA::ARAPlugInExtensionInstance ara_extension_c_struct_{};
+    // Key fields for the cached binding — used to detect re-bind with different args.
+    native_size_t ara_bound_dc_id_ = 0;
+    ARA::ARAInt32 ara_bound_known_roles_ = 0;
+    ARA::ARAInt32 ara_bound_assigned_roles_ = 0;
+#endif
 };

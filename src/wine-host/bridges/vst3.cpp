@@ -74,11 +74,13 @@ Vst3PluginInterfaces::Vst3PluginInterfaces(
       process_context_requirements(object),
       program_list_data(object),
       unit_info(object),
-      xml_representation_controller(object) {
+      xml_representation_controller(object)
 #ifdef WITH_ARA
-    plug_in_entry_point = Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint>(object);
-    plug_in_entry_point_2 = Steinberg::FUnknownPtr<ARA::IPlugInEntryPoint2>(object);
+      ,
+      plug_in_entry_point(object),
+      plug_in_entry_point_2(object)
 #endif
+{
 }
 
 Vst3PluginInstance::Vst3PluginInstance(
@@ -227,12 +229,12 @@ void Vst3Bridge::run() {
 #ifdef WITH_ARA
                 if (instance.interfaces.plug_in_entry_point_2 ||
                     instance.interfaces.plug_in_entry_point) {
-                    std::cerr << "[ARA] plugin instance " << instance_id
-                              << " supports ARA"
-                              << (instance.interfaces.plug_in_entry_point_2
-                                      ? "2 (IPlugInEntryPoint2)"
-                                      : "1 (IPlugInEntryPoint only)")
-                              << std::endl;
+                    logger_.log(
+                        std::string("[ARA] plugin instance ") +
+                        std::to_string(instance_id) + " supports ARA" +
+                        (instance.interfaces.plug_in_entry_point_2
+                             ? "2 (IPlugInEntryPoint2)"
+                             : "1 (IPlugInEntryPoint only)"));
                 }
 #endif
 
@@ -1504,12 +1506,14 @@ void Vst3Bridge::run() {
         [&](YaPlugInEntryPoint::GetFactory& request)
             -> YaPlugInEntryPoint::GetFactory::Response {
             const auto& [instance, _] = get_instance(request.instance_id);
+            // IPlugInEntryPoint2 does not expose getFactory(); both interfaces
+            // share IPlugInEntryPoint for factory access.
+            const ARA::ARAFactory* factory = nullptr;
             if (instance.interfaces.plug_in_entry_point) {
-                const ARA::ARAFactory* factory =
-                    instance.interfaces.plug_in_entry_point->getFactory();
-                if (factory) {
-                    return from_ara_factory(factory);
-                }
+                factory = instance.interfaces.plug_in_entry_point->getFactory();
+            }
+            if (factory) {
+                return from_ara_factory(factory);
             }
             return UniversalTResult(Steinberg::kResultFalse);
         },
@@ -1531,10 +1535,10 @@ void Vst3Bridge::run() {
                               static_cast<ARA::ARAPlugInInstanceRoleFlags>(
                                   request.assigned_roles));
             } else if (instance.interfaces.plug_in_entry_point) {
-                constexpr ARA::ARAInt32 legacy =
-                    ARA::kARAPlaybackRendererRole |
-                    ARA::kARAEditorRendererRole | ARA::kARAEditorViewRole;
-                if ((request.known_roles & ~legacy) == 0) {
+                // ARA1 fallback: only when both known and assigned roles
+                // match the legacy set exactly.
+                if (request.known_roles == YaPlugInEntryPoint::kARALegacyRoles &&
+                    request.assigned_roles == YaPlugInEntryPoint::kARALegacyRoles) {
                     ext = instance.interfaces.plug_in_entry_point
                               ->bindToDocumentController(dc_ref);
                 }
@@ -1549,6 +1553,169 @@ void Vst3Bridge::run() {
                     ext->playbackRendererInterface != nullptr,
                 .has_editor_renderer = ext->editorRendererInterface != nullptr,
                 .has_editor_view = ext->editorViewInterface != nullptr};
+        },
+        [&](const YaMainFactory::Construct& request)
+            -> YaMainFactory::Construct::Response {
+            Steinberg::TUID cid;
+            ArrayUID wine_cid = request.cid.get_wine_uid();
+            std::copy(wine_cid.begin(), wine_cid.end(), cid);
+
+            Steinberg::FUnknownPtr<Steinberg::IPluginFactory> factory(
+                module_->getFactory().get());
+            if (!factory) {
+                return UniversalTResult(Steinberg::kResultFalse);
+            }
+
+            ARA::IMainFactory* main_factory = nullptr;
+            factory->createInstance(cid, ARA::IMainFactory::iid.toTUID(),
+                                    reinterpret_cast<void**>(&main_factory));
+            if (!main_factory) {
+                return UniversalTResult(Steinberg::kResultFalse);
+            }
+
+            const ARA::ARAFactory* ara_factory = main_factory->getFactory();
+            main_factory->release();
+
+            if (!ara_factory) {
+                return UniversalTResult(Steinberg::kResultFalse);
+            }
+
+            return from_ara_factory(ara_factory);
+        },
+        // Document controller message stubs — real implementation in task 8.2
+        [&](const YaAra::CreateDocumentController&)
+            -> YaAra::CreateDocumentController::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::DestroyDocumentController&)
+            -> YaAra::DestroyDocumentController::Response {
+            return Ack{};
+        },
+        [&](const YaAra::BeginEditing&) -> YaAra::BeginEditing::Response {
+            return Ack{};
+        },
+        [&](const YaAra::EndEditing&) -> YaAra::EndEditing::Response {
+            return Ack{};
+        },
+        [&](const YaAra::NotifyModelUpdates&)
+            -> YaAra::NotifyModelUpdates::Response {
+            return Ack{};
+        },
+        [&](const YaAra::UpdateDocumentProperties&)
+            -> YaAra::UpdateDocumentProperties::Response {
+            return Ack{};
+        },
+        [&](const YaAra::AddMusicalContext&)
+            -> YaAra::AddMusicalContext::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::UpdateMusicalContextProperties&)
+            -> YaAra::UpdateMusicalContextProperties::Response {
+            return Ack{};
+        },
+        [&](const YaAra::UpdateMusicalContextContent&)
+            -> YaAra::UpdateMusicalContextContent::Response {
+            return Ack{};
+        },
+        [&](const YaAra::RemoveMusicalContext&)
+            -> YaAra::RemoveMusicalContext::Response {
+            return Ack{};
+        },
+        [&](const YaAra::AddRegionSequence&)
+            -> YaAra::AddRegionSequence::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::UpdateRegionSequenceProperties&)
+            -> YaAra::UpdateRegionSequenceProperties::Response {
+            return Ack{};
+        },
+        [&](const YaAra::RemoveRegionSequence&)
+            -> YaAra::RemoveRegionSequence::Response {
+            return Ack{};
+        },
+        [&](const YaAra::AddAudioSource&)
+            -> YaAra::AddAudioSource::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::UpdateAudioSourceProperties&)
+            -> YaAra::UpdateAudioSourceProperties::Response {
+            return Ack{};
+        },
+        [&](const YaAra::UpdateAudioSourceContent&)
+            -> YaAra::UpdateAudioSourceContent::Response {
+            return Ack{};
+        },
+        [&](const YaAra::EnableAudioSourceSamplesAccess&)
+            -> YaAra::EnableAudioSourceSamplesAccess::Response {
+            return Ack{};
+        },
+        [&](const YaAra::DeactivateAndUnregisterAudioSource&)
+            -> YaAra::DeactivateAndUnregisterAudioSource::Response {
+            return Ack{};
+        },
+        [&](const YaAra::RemoveAudioSource&)
+            -> YaAra::RemoveAudioSource::Response {
+            return Ack{};
+        },
+        [&](const YaAra::AddAudioModification&)
+            -> YaAra::AddAudioModification::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::CloneAudioModification&)
+            -> YaAra::CloneAudioModification::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::UpdateAudioModificationProperties&)
+            -> YaAra::UpdateAudioModificationProperties::Response {
+            return Ack{};
+        },
+        [&](const YaAra::DeactivateAndUnregisterAudioModification&)
+            -> YaAra::DeactivateAndUnregisterAudioModification::Response {
+            return Ack{};
+        },
+        [&](const YaAra::RemoveAudioModification&)
+            -> YaAra::RemoveAudioModification::Response {
+            return Ack{};
+        },
+        [&](const YaAra::AddPlaybackRegion&)
+            -> YaAra::AddPlaybackRegion::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::UpdatePlaybackRegionProperties&)
+            -> YaAra::UpdatePlaybackRegionProperties::Response {
+            return Ack{};
+        },
+        [&](const YaAra::RemovePlaybackRegion&)
+            -> YaAra::RemovePlaybackRegion::Response {
+            return Ack{};
+        },
+        [&](const YaAra::RequestAudioSourceContentAnalysis&)
+            -> YaAra::RequestAudioSourceContentAnalysis::Response {
+            return Ack{};
+        },
+        [&](const YaAra::GetPlaybackRegionHeadAndTailTime&)
+            -> YaAra::GetPlaybackRegionHeadAndTailTime::Response {
+            return YaAra::GetPlaybackRegionHeadAndTailTime::Response{};
+        },
+        [&](const YaAra::StoreObjectsToArchive&)
+            -> YaAra::StoreObjectsToArchive::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::RestoreObjectsFromArchive&)
+            -> YaAra::RestoreObjectsFromArchive::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::StoreDocumentToArchive&)
+            -> YaAra::StoreDocumentToArchive::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::BeginRestoringDocumentFromArchive&)
+            -> YaAra::BeginRestoringDocumentFromArchive::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
+        },
+        [&](const YaAra::EndRestoringDocumentFromArchive&)
+            -> YaAra::EndRestoringDocumentFromArchive::Response {
+            return UniversalTResult(Steinberg::kNotImplemented);
         },
 #endif  // WITH_ARA
         });

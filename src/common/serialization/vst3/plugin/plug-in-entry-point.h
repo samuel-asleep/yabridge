@@ -94,6 +94,12 @@ class YaPlugInEntryPoint {
     }
 
 #ifdef WITH_ARA
+    // The legacy ARA1 role set used by bindToDocumentController().
+    // Shared between the Linux proxy and Wine-side handler.
+    static constexpr ARA::ARAInt32 kARALegacyRoles =
+        ARA::kARAPlaybackRendererRole | ARA::kARAEditorRendererRole |
+        ARA::kARAEditorViewRole;
+
     struct GetFactory {
         using Response = std::variant<YaAraFactory, UniversalTResult>;
 

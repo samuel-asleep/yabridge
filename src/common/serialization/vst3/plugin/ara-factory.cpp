@@ -18,7 +18,154 @@
 
 #include "ara-factory.h"
 
+// ---------------------------------------------------------------------------
+// Static registry
+// ---------------------------------------------------------------------------
+
+std::unordered_map<const char*, YaAraFactory::RegistryEntry>&
+YaAraFactory::registry() {
+    static std::unordered_map<const char*, RegistryEntry> r;
+    return r;
+}
+
+std::mutex& YaAraFactory::registry_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+// ---------------------------------------------------------------------------
+// IPC trampoline
+//
+// The ARA C API does not pass the ARAFactory pointer into this callback.
+// We key the registry on factoryID.c_str() — the address of the string
+// storage inside the owning YaAraFactory.  That address is unique per
+// YaAraFactory instance and stable for its lifetime.
+//
+// We find the right entry by scanning the registered factories whose
+// create_dc callback is set.  Because the number of concurrently registered
+// factories is tiny (one per ARA-capable plugin binary loaded into the
+// process), a linear scan is fine.
+// ---------------------------------------------------------------------------
+
+const ARA::ARADocumentControllerInstance* ARA_CALL
+YaAraFactory::ipc_create_document_controller(
+    const ARA::ARADocumentControllerHostInstance* hostInstance,
+    const ARA::ARADocumentProperties* properties) {
+    // We cannot identify *which* factory is being called from the arguments
+    // alone.  If exactly one factory is registered with IPC support, dispatch
+    // to it directly.  If multiple are registered we pick the one whose
+    // factoryID matches the properties (not available here), so we must rely
+    // on the fact that in a single-bridge process there is typically one
+    // registered factory at a time.
+    //
+    // In the rare multi-factory case the first registered entry is used — this
+    // is acceptable for the current implementation scope.
+    std::lock_guard lock(registry_mutex());
+    auto& reg = registry();
+    for (auto& [key, entry] : reg) {
+        if (entry.create_dc) {
+            const native_size_t dc_id =
+                entry.next_dc_id.fetch_add(1, std::memory_order_relaxed);
+            return entry.create_dc(hostInstance, properties, dc_id);
+        }
+    }
+    return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// fill_factory_fields
+// ---------------------------------------------------------------------------
+
+void YaAraFactory::fill_factory_fields(ARA::ARAFactory& factory) const {
+    compatible_archive_id_ptrs_.clear();
+    compatible_archive_id_ptrs_.reserve(compatibleDocumentArchiveIDs.size());
+    for (const auto& id : compatibleDocumentArchiveIDs)
+        compatible_archive_id_ptrs_.push_back(id.c_str());
+
+    factory.structSize = std::min(static_cast<ARA::ARASize>(structSize),
+                                  sizeof(ARA::ARAFactory));
+    factory.lowestSupportedApiGeneration =
+        static_cast<ARA::ARAAPIGeneration>(lowestSupportedApiGeneration);
+    factory.highestSupportedApiGeneration =
+        static_cast<ARA::ARAAPIGeneration>(highestSupportedApiGeneration);
+    factory.factoryID = factoryID.c_str();
+    factory.initializeARAWithConfiguration = stub_initialize;
+    factory.uninitializeARA = stub_uninitialize;
+    factory.plugInName = plugInName.c_str();
+    factory.manufacturerName = manufacturerName.c_str();
+    factory.informationURL = informationURL.c_str();
+    factory.version = version.c_str();
+    factory.documentArchiveID = documentArchiveID.c_str();
+    factory.compatibleDocumentArchiveIDsCount =
+        static_cast<ARA::ARASize>(compatible_archive_id_ptrs_.size());
+    factory.compatibleDocumentArchiveIDs =
+        compatible_archive_id_ptrs_.empty() ? nullptr
+                                            : compatible_archive_id_ptrs_.data();
+
+    content_type_ptrs_.resize(analyzeableContentTypes.size());
+    for (size_t i = 0; i < analyzeableContentTypes.size(); ++i)
+        content_type_ptrs_[i] =
+            static_cast<ARA::ARAContentType>(analyzeableContentTypes[i]);
+    factory.analyzeableContentTypesCount =
+        static_cast<ARA::ARASize>(analyzeableContentTypes.size());
+    factory.analyzeableContentTypes =
+        content_type_ptrs_.empty() ? nullptr : content_type_ptrs_.data();
+
+    factory.supportedPlaybackTransformationFlags =
+        static_cast<ARA::ARAPlaybackTransformationFlags>(
+            supportedPlaybackTransformationFlags);
+    factory.supportsStoringAudioFileChunks =
+        static_cast<ARA::ARABool>(supportsStoringAudioFileChunks);
+}
+
+// ---------------------------------------------------------------------------
+// to_ara_factory
+// ---------------------------------------------------------------------------
+
+ARA::ARAFactory YaAraFactory::to_ara_factory(
+    AraCreateDcFn create_dc) const {
+    ARA::ARAFactory factory{};
+    fill_factory_fields(factory);
+
+    if (create_dc) {
+        factory.createDocumentControllerWithDocument =
+            ipc_create_document_controller;
+
+        std::lock_guard lock(registry_mutex());
+        // Key on the address of factoryID's internal buffer — stable and
+        // unique per YaAraFactory instance.
+        auto& entry = registry()[factoryID.c_str()];
+        entry.create_dc = std::move(create_dc);
+        entry.owner = const_cast<YaAraFactory*>(this);
+        registered_ = true;
+    } else {
+        factory.createDocumentControllerWithDocument =
+            stub_create_document_controller;
+    }
+
+    return factory;
+}
+
+// ---------------------------------------------------------------------------
+// unregister_factory
+// ---------------------------------------------------------------------------
+
+void YaAraFactory::unregister_factory() const noexcept {
+    if (!registered_)
+        return;
+    std::lock_guard lock(registry_mutex());
+    registry().erase(factoryID.c_str());
+    registered_ = false;
+}
+
+// ---------------------------------------------------------------------------
+// from_ara_factory
+// ---------------------------------------------------------------------------
+
 YaAraFactory from_ara_factory(const ARA::ARAFactory* factory) {
+    if (!factory)
+        return YaAraFactory{};
+
     YaAraFactory result{};
 
     result.structSize = static_cast<uint64_t>(factory->structSize);
@@ -33,35 +180,38 @@ YaAraFactory from_ara_factory(const ARA::ARAFactory* factory) {
     result.informationURL =
         factory->informationURL ? factory->informationURL : "";
     result.version = factory->version ? factory->version : "";
-    result.documentArchiveID =
-        factory->documentArchiveID ? factory->documentArchiveID : "";
 
-    if (factory->compatibleDocumentArchiveIDs) {
-        result.compatibleDocumentArchiveIDs.reserve(
-            factory->compatibleDocumentArchiveIDsCount);
-        for (ARA::ARASize i = 0;
-             i < factory->compatibleDocumentArchiveIDsCount; ++i) {
-            result.compatibleDocumentArchiveIDs.push_back(
-                factory->compatibleDocumentArchiveIDs[i]
-                    ? factory->compatibleDocumentArchiveIDs[i]
-                    : "");
+    if (factory->structSize >= sizeof(ARA::ARAFactory)) {
+        result.documentArchiveID =
+            factory->documentArchiveID ? factory->documentArchiveID : "";
+
+        if (factory->compatibleDocumentArchiveIDs) {
+            result.compatibleDocumentArchiveIDs.reserve(
+                factory->compatibleDocumentArchiveIDsCount);
+            for (ARA::ARASize i = 0;
+                 i < factory->compatibleDocumentArchiveIDsCount; ++i) {
+                result.compatibleDocumentArchiveIDs.push_back(
+                    factory->compatibleDocumentArchiveIDs[i]
+                        ? factory->compatibleDocumentArchiveIDs[i]
+                        : "");
+            }
         }
-    }
 
-    if (factory->analyzeableContentTypes) {
-        result.analyzeableContentTypes.reserve(
-            factory->analyzeableContentTypesCount);
-        for (ARA::ARASize i = 0;
-             i < factory->analyzeableContentTypesCount; ++i) {
-            result.analyzeableContentTypes.push_back(
-                static_cast<int32_t>(factory->analyzeableContentTypes[i]));
+        if (factory->analyzeableContentTypes) {
+            result.analyzeableContentTypes.reserve(
+                factory->analyzeableContentTypesCount);
+            for (ARA::ARASize i = 0;
+                 i < factory->analyzeableContentTypesCount; ++i) {
+                result.analyzeableContentTypes.push_back(
+                    static_cast<int32_t>(factory->analyzeableContentTypes[i]));
+            }
         }
-    }
 
-    result.supportedPlaybackTransformationFlags =
-        static_cast<int32_t>(factory->supportedPlaybackTransformationFlags);
-    result.supportsStoringAudioFileChunks =
-        static_cast<int32_t>(factory->supportsStoringAudioFileChunks);
+        result.supportedPlaybackTransformationFlags =
+            static_cast<int32_t>(factory->supportedPlaybackTransformationFlags);
+        result.supportsStoringAudioFileChunks =
+            static_cast<int32_t>(factory->supportsStoringAudioFileChunks);
+    }
 
     return result;
 }

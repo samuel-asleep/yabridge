@@ -18,20 +18,32 @@
 
 #ifdef WITH_ARA
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <ARAInterface.h>
 
+#include "../../common.h"
+
+// Callback invoked when the host calls ARAFactory::createDocumentControllerWithDocument.
+// Receives the host instance, document properties, and a freshly allocated ara_dc_id.
+using AraCreateDcFn =
+    std::function<const ARA::ARADocumentControllerInstance*(
+        const ARA::ARADocumentControllerHostInstance*,
+        const ARA::ARADocumentProperties*,
+        native_size_t ara_dc_id)>;
+
 struct YaAraFactory {
-    // Stored as plain integer types to avoid bitsery issues with ARA_32_BIT_ENUM
-    // structs and platform-dependent size_t (ARASize).
-    int32_t lowestSupportedApiGeneration;
-    int32_t highestSupportedApiGeneration;
-    uint64_t structSize;
-    int32_t supportedPlaybackTransformationFlags;
-    int32_t supportsStoringAudioFileChunks;
+    int32_t lowestSupportedApiGeneration = 0;
+    int32_t highestSupportedApiGeneration = 0;
+    uint64_t structSize = 0;
+    int32_t supportedPlaybackTransformationFlags = 0;
+    int32_t supportsStoringAudioFileChunks = 0;
 
     std::string factoryID;
     std::string plugInName;
@@ -61,69 +73,71 @@ struct YaAraFactory {
         s.container4b(analyzeableContentTypes, 256);
     }
 
-    ARA::ARAFactory to_ara_factory() const noexcept {
-        compatible_archive_id_ptrs_.clear();
-        compatible_archive_id_ptrs_.reserve(compatibleDocumentArchiveIDs.size());
-        for (const auto& id : compatibleDocumentArchiveIDs) {
-            compatible_archive_id_ptrs_.push_back(id.c_str());
-        }
+    // Build an ARAFactory C struct whose const char* pointers are backed by
+    // this YaAraFactory's string members. Both this object and the returned
+    // factory must remain at a stable address for the host's lifetime.
+    //
+    // If create_dc is provided, registers it in the global factory registry so
+    // the createDocumentControllerWithDocument trampoline can route to the
+    // bridge. Call unregister_factory() when the owning object is destroyed.
+    //
+    // When create_dc is null, a stub returning nullptr is installed instead.
+    ARA::ARAFactory to_ara_factory(AraCreateDcFn create_dc = nullptr) const;
 
-        ARA::ARAFactory factory{};
-        factory.structSize = static_cast<ARA::ARASize>(structSize);
-        factory.lowestSupportedApiGeneration =
-            static_cast<ARA::ARAAPIGeneration>(lowestSupportedApiGeneration);
-        factory.highestSupportedApiGeneration =
-            static_cast<ARA::ARAAPIGeneration>(highestSupportedApiGeneration);
-        factory.factoryID = factoryID.c_str();
-        factory.initializeARAWithConfiguration = stub_initialize;
-        factory.uninitializeARA = stub_uninitialize;
-        factory.plugInName = plugInName.c_str();
-        factory.manufacturerName = manufacturerName.c_str();
-        factory.informationURL = informationURL.c_str();
-        factory.version = version.c_str();
-        factory.createDocumentControllerWithDocument =
-            stub_create_document_controller;
-        factory.documentArchiveID = documentArchiveID.c_str();
-        factory.compatibleDocumentArchiveIDsCount =
-            static_cast<ARA::ARASize>(compatible_archive_id_ptrs_.size());
-        factory.compatibleDocumentArchiveIDs =
-            compatible_archive_id_ptrs_.empty()
-                ? nullptr
-                : compatible_archive_id_ptrs_.data();
-        factory.analyzeableContentTypesCount =
-            static_cast<ARA::ARASize>(analyzeableContentTypes.size());
-
-        content_type_ptrs_.resize(analyzeableContentTypes.size());
-        for (size_t i = 0; i < analyzeableContentTypes.size(); ++i) {
-            content_type_ptrs_[i] =
-                static_cast<ARA::ARAContentType>(analyzeableContentTypes[i]);
-        }
-        factory.analyzeableContentTypes =
-            content_type_ptrs_.empty() ? nullptr : content_type_ptrs_.data();
-
-        factory.supportedPlaybackTransformationFlags =
-            static_cast<ARA::ARAPlaybackTransformationFlags>(
-                supportedPlaybackTransformationFlags);
-        factory.supportsStoringAudioFileChunks =
-            static_cast<ARA::ARABool>(supportsStoringAudioFileChunks);
-        return factory;
-    }
+    // Remove the factory from the global registry. Must be called when the
+    // owning object is destroyed, if to_ara_factory was called with a non-null
+    // create_dc.
+    void unregister_factory() const noexcept;
 
    private:
-    // Stub callbacks — replaced by real implementations once document
-    // controller support (task 7) is wired up.
     static void ARA_CALL stub_initialize(
-        const ARA::ARAInterfaceConfiguration* /*config*/) {}
+        const ARA::ARAInterfaceConfiguration*) {}
     static void ARA_CALL stub_uninitialize() {}
+
     static const ARA::ARADocumentControllerInstance* ARA_CALL
     stub_create_document_controller(
-        const ARA::ARADocumentControllerHostInstance* /*hostInstance*/,
-        const ARA::ARADocumentProperties* /*properties*/) {
+        const ARA::ARADocumentControllerHostInstance*,
+        const ARA::ARADocumentProperties*) {
         return nullptr;
     }
 
+    // Shared trampoline for all factories registered with create_dc. Looks up
+    // the calling factory by matching the registered ARAFactory address stored
+    // at call time via the global registry keyed by factory pointer.
+    //
+    // Since the ARA C API does not pass the factory pointer into this callback,
+    // the registry is keyed by the factory's unique factoryID string pointer
+    // (which is stable for the lifetime of the YaAraFactory that owns the
+    // string). The registry is populated with the exact const char* address of
+    // factoryID.c_str() so each factory gets a unique key.
+    static const ARA::ARADocumentControllerInstance* ARA_CALL
+    ipc_create_document_controller(
+        const ARA::ARADocumentControllerHostInstance* hostInstance,
+        const ARA::ARADocumentProperties* properties);
+
+    // Global registry: key = factoryID.c_str() address of the owning
+    // YaAraFactory, value = {create_dc callback, next_dc_id counter}.
+    struct RegistryEntry {
+        AraCreateDcFn create_dc;
+        YaAraFactory* owner;
+        std::atomic<native_size_t> next_dc_id{1};
+        // Disable copy since atomic is not copyable
+        RegistryEntry() = default;
+        RegistryEntry(AraCreateDcFn dc, YaAraFactory* o)
+            : create_dc(std::move(dc)), owner(o) {}
+        RegistryEntry(RegistryEntry&&) = default;
+        RegistryEntry& operator=(RegistryEntry&&) = default;
+        RegistryEntry(const RegistryEntry&) = delete;
+        RegistryEntry& operator=(const RegistryEntry&) = delete;
+    };
+    static std::unordered_map<const char*, RegistryEntry>& registry();
+    static std::mutex& registry_mutex();
+
+    void fill_factory_fields(ARA::ARAFactory& factory) const;
+
     mutable std::vector<const char*> compatible_archive_id_ptrs_;
     mutable std::vector<ARA::ARAContentType> content_type_ptrs_;
+    mutable bool registered_ = false;
 };
 
 YaAraFactory from_ara_factory(const ARA::ARAFactory* factory);
