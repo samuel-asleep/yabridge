@@ -138,6 +138,7 @@ struct YaAraFactory {
     mutable std::vector<const char*> compatible_archive_id_ptrs_;
     mutable std::vector<ARA::ARAContentType> content_type_ptrs_;
     mutable bool registered_ = false;
+    mutable bool fill_called_ = false;
 };
 
 YaAraFactory from_ara_factory(const ARA::ARAFactory* factory);

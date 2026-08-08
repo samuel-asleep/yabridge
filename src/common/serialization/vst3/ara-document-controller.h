@@ -737,6 +737,402 @@ struct EndRestoringDocumentFromArchive {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Host callback messages (plugin -> host, over plugin_host_callback_ socket)
+// ---------------------------------------------------------------------------
+
+namespace HostCallback {
+
+// Wrapper for uint64_t handle responses
+struct HandleResponse {
+    uint64_t value = 0;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(value);
+    }
+};
+
+// Wrapper for ARASize / ARABool / ARAInt32 / ARAContentGrade responses
+struct Int32Response {
+    int32_t value = 0;
+    template <typename S>
+    void serialize(S& s) {
+        s.value4b(value);
+    }
+};
+
+// Wrapper for archive data blob responses
+struct BytesResponse {
+    std::vector<uint8_t> data;
+    template <typename S>
+    void serialize(S& s) {
+        s.container1b(data, 67108864);
+    }
+};
+
+// Wrapper for string responses (e.g. archive ID)
+struct StringResponse {
+    std::string value;
+    template <typename S>
+    void serialize(S& s) {
+        s.text1b(value, 4096);
+    }
+};
+
+struct CreateAudioReader {
+    struct Response {
+        uint64_t value = 0;
+        int32_t channel_count = 0;
+        template <typename S>
+        void serialize(S& s) {
+            s.value8b(value);
+            s.value4b(channel_count);
+        }
+    };
+    native_size_t ara_dc_id;
+    uint64_t audio_source_host_ref;
+    int32_t use_64bit_samples;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_host_ref);
+        s.value4b(use_64bit_samples);
+    }
+};
+
+struct DestroyAudioReader {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    uint64_t audio_reader_id;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_reader_id);
+    }
+};
+
+struct GetArchiveSize {
+    using Response = HandleResponse;
+    native_size_t ara_dc_id;
+    uint64_t archive_reader_host_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(archive_reader_host_ref);
+    }
+};
+
+struct ReadBytesFromArchive {
+    using Response = BytesResponse;
+    native_size_t ara_dc_id;
+    uint64_t archive_reader_host_ref;
+    uint64_t position;
+    uint64_t length;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(archive_reader_host_ref);
+        s.value8b(position);
+        s.value8b(length);
+    }
+};
+
+struct WriteBytesToArchive {
+    using Response = Int32Response;
+    native_size_t ara_dc_id;
+    uint64_t archive_writer_host_ref;
+    uint64_t position;
+    std::vector<uint8_t> data;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(archive_writer_host_ref);
+        s.value8b(position);
+        s.container1b(data, 67108864);
+    }
+};
+
+struct NotifyDocumentArchivingProgress {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    float value;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value4b(value);
+    }
+};
+
+struct NotifyDocumentUnarchivingProgress {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    float value;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value4b(value);
+    }
+};
+
+struct GetDocumentArchiveID {
+    using Response = StringResponse;
+    native_size_t ara_dc_id;
+    uint64_t archive_reader_host_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(archive_reader_host_ref);
+    }
+};
+
+struct IsMusicalContextContentAvailable {
+    using Response = Int32Response;
+    native_size_t ara_dc_id;
+    uint64_t musical_context_host_ref;
+    int32_t content_type;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(musical_context_host_ref);
+        s.value4b(content_type);
+    }
+};
+
+struct GetMusicalContextContentGrade {
+    using Response = Int32Response;
+    native_size_t ara_dc_id;
+    uint64_t musical_context_host_ref;
+    int32_t content_type;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(musical_context_host_ref);
+        s.value4b(content_type);
+    }
+};
+
+struct CreateMusicalContextContentReader {
+    using Response = HandleResponse;
+    native_size_t ara_dc_id;
+    uint64_t musical_context_host_ref;
+    int32_t content_type;
+    std::optional<YaAraContentTimeRange> range;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(musical_context_host_ref);
+        s.value4b(content_type);
+        s.ext(range, bitsery::ext::InPlaceOptional{},
+              [](S& s, YaAraContentTimeRange& v) { s.object(v); });
+    }
+};
+
+struct IsAudioSourceContentAvailable {
+    using Response = Int32Response;
+    native_size_t ara_dc_id;
+    uint64_t audio_source_host_ref;
+    int32_t content_type;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_host_ref);
+        s.value4b(content_type);
+    }
+};
+
+struct GetAudioSourceContentGrade {
+    using Response = Int32Response;
+    native_size_t ara_dc_id;
+    uint64_t audio_source_host_ref;
+    int32_t content_type;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_host_ref);
+        s.value4b(content_type);
+    }
+};
+
+struct CreateAudioSourceContentReader {
+    using Response = HandleResponse;
+    native_size_t ara_dc_id;
+    uint64_t audio_source_host_ref;
+    int32_t content_type;
+    std::optional<YaAraContentTimeRange> range;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_host_ref);
+        s.value4b(content_type);
+        s.ext(range, bitsery::ext::InPlaceOptional{},
+              [](S& s, YaAraContentTimeRange& v) { s.object(v); });
+    }
+};
+
+struct GetContentReaderEventCount {
+    using Response = Int32Response;
+    native_size_t ara_dc_id;
+    uint64_t content_reader_host_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(content_reader_host_ref);
+    }
+};
+
+struct GetContentReaderDataForEvent {
+    using Response = BytesResponse;
+    native_size_t ara_dc_id;
+    uint64_t content_reader_host_ref;
+    int32_t event_index;
+    int32_t content_type;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(content_reader_host_ref);
+        s.value4b(event_index);
+        s.value4b(content_type);
+    }
+};
+
+struct DestroyContentReader {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    uint64_t content_reader_host_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(content_reader_host_ref);
+    }
+};
+
+struct NotifyAudioSourceAnalysisProgress {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    uint64_t audio_source_host_ref;
+    int32_t state;
+    float value;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_host_ref);
+        s.value4b(state);
+        s.value4b(value);
+    }
+};
+
+struct NotifyAudioSourceContentChanged {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    uint64_t audio_source_host_ref;
+    std::optional<YaAraContentTimeRange> range;
+    int32_t flags;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_host_ref);
+        s.ext(range, bitsery::ext::InPlaceOptional{},
+              [](S& s, YaAraContentTimeRange& v) { s.object(v); });
+        s.value4b(flags);
+    }
+};
+
+struct NotifyAudioModificationContentChanged {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    uint64_t audio_modification_host_ref;
+    std::optional<YaAraContentTimeRange> range;
+    int32_t flags;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_modification_host_ref);
+        s.ext(range, bitsery::ext::InPlaceOptional{},
+              [](S& s, YaAraContentTimeRange& v) { s.object(v); });
+        s.value4b(flags);
+    }
+};
+
+struct NotifyPlaybackRegionContentChanged {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    uint64_t playback_region_host_ref;
+    std::optional<YaAraContentTimeRange> range;
+    int32_t flags;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(playback_region_host_ref);
+        s.ext(range, bitsery::ext::InPlaceOptional{},
+              [](S& s, YaAraContentTimeRange& v) { s.object(v); });
+        s.value4b(flags);
+    }
+};
+
+struct NotifyDocumentDataChanged {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+    }
+};
+
+struct RequestStartPlayback {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+    }
+};
+
+struct RequestStopPlayback {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+    }
+};
+
+struct RequestSetPlaybackPosition {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    double time_position;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(time_position);
+    }
+};
+
+struct RequestSetCycleRange {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    double start_time;
+    double duration;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(start_time);
+        s.value8b(duration);
+    }
+};
+
+struct RequestEnableCycle {
+    using Response = Ack;
+    native_size_t ara_dc_id;
+    int32_t enable;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value4b(enable);
+    }
+};
+
+}  // namespace HostCallback
+
 }  // namespace YaAra
 
 // ---------------------------------------------------------------------------

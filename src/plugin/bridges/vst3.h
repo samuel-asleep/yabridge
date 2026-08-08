@@ -204,9 +204,14 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      * Create a document controller proxy for the given DC ID and store it.
      * Returns a pointer to the stored proxy's `ARADocumentControllerInstance`.
      * The proxy is owned by this bridge for the lifetime of the ARA session.
+     *
+     * The `host_instance` pointer must remain valid and unmodified until the
+     * corresponding `unregister_ara_document_controller()` call, as the proxy
+     * dereferences it during host-callback handling.
      */
     const ARA::ARADocumentControllerInstance* register_ara_document_controller(
-        native_size_t ara_dc_id);
+        native_size_t ara_dc_id,
+        const ARA::ARADocumentControllerHostInstance* host_instance);
 
     /**
      * Remove and destroy the document controller proxy for the given DC ID.
@@ -220,7 +225,6 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
                        std::unique_ptr<class AraDocumentControllerProxy>>
         ara_document_controllers_;
     std::mutex ara_document_controllers_mutex_;
-    std::atomic<native_size_t> next_ara_dc_id_{1};
 #endif
 
    private:

@@ -2334,4 +2334,59 @@ void Vst3Logger::log_response(
     });
 }
 
+// ---------------------------------------------------------------------------
+// ARA HostCallback log_request stubs (all suppressed below all_events)
+// ---------------------------------------------------------------------------
+
+#define ARA_CB_LOG_REQUEST_STUB(Type)                                         \
+    bool Vst3Logger::log_request(bool /*is_host_plugin*/,                     \
+                                 const YaAra::HostCallback::Type&) {          \
+        return false;                                                          \
+    }
+
+ARA_CB_LOG_REQUEST_STUB(CreateAudioReader)
+ARA_CB_LOG_REQUEST_STUB(DestroyAudioReader)
+ARA_CB_LOG_REQUEST_STUB(GetArchiveSize)
+ARA_CB_LOG_REQUEST_STUB(ReadBytesFromArchive)
+ARA_CB_LOG_REQUEST_STUB(WriteBytesToArchive)
+ARA_CB_LOG_REQUEST_STUB(NotifyDocumentArchivingProgress)
+ARA_CB_LOG_REQUEST_STUB(NotifyDocumentUnarchivingProgress)
+ARA_CB_LOG_REQUEST_STUB(GetDocumentArchiveID)
+ARA_CB_LOG_REQUEST_STUB(IsMusicalContextContentAvailable)
+ARA_CB_LOG_REQUEST_STUB(GetMusicalContextContentGrade)
+ARA_CB_LOG_REQUEST_STUB(CreateMusicalContextContentReader)
+ARA_CB_LOG_REQUEST_STUB(IsAudioSourceContentAvailable)
+ARA_CB_LOG_REQUEST_STUB(GetAudioSourceContentGrade)
+ARA_CB_LOG_REQUEST_STUB(CreateAudioSourceContentReader)
+ARA_CB_LOG_REQUEST_STUB(GetContentReaderEventCount)
+ARA_CB_LOG_REQUEST_STUB(GetContentReaderDataForEvent)
+ARA_CB_LOG_REQUEST_STUB(DestroyContentReader)
+ARA_CB_LOG_REQUEST_STUB(NotifyAudioSourceAnalysisProgress)
+ARA_CB_LOG_REQUEST_STUB(NotifyAudioSourceContentChanged)
+ARA_CB_LOG_REQUEST_STUB(NotifyAudioModificationContentChanged)
+ARA_CB_LOG_REQUEST_STUB(NotifyPlaybackRegionContentChanged)
+ARA_CB_LOG_REQUEST_STUB(NotifyDocumentDataChanged)
+ARA_CB_LOG_REQUEST_STUB(RequestStartPlayback)
+ARA_CB_LOG_REQUEST_STUB(RequestStopPlayback)
+ARA_CB_LOG_REQUEST_STUB(RequestSetPlaybackPosition)
+ARA_CB_LOG_REQUEST_STUB(RequestSetCycleRange)
+ARA_CB_LOG_REQUEST_STUB(RequestEnableCycle)
+
+#undef ARA_CB_LOG_REQUEST_STUB
+
+void Vst3Logger::log_response(bool /*is_host_plugin*/,
+                               const YaAra::HostCallback::CreateAudioReader::Response& /*v*/) {}
+
+void Vst3Logger::log_response(bool /*is_host_plugin*/,
+                               const YaAra::HostCallback::HandleResponse& /*v*/) {}
+
+void Vst3Logger::log_response(bool /*is_host_plugin*/,
+                               const YaAra::HostCallback::Int32Response& /*v*/) {}
+
+void Vst3Logger::log_response(bool /*is_host_plugin*/,
+                               const YaAra::HostCallback::BytesResponse& /*v*/) {}
+
+void Vst3Logger::log_response(bool /*is_host_plugin*/,
+                               const YaAra::HostCallback::StringResponse& /*v*/) {}
+
 #endif  // WITH_ARA

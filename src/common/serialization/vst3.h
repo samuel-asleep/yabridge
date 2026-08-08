@@ -314,7 +314,38 @@ using Vst3CallbackRequest =
                  YaProgress::Finish,
                  YaUnitHandler::NotifyUnitSelection,
                  YaUnitHandler::NotifyProgramListChange,
-                 YaUnitHandler2::NotifyUnitByBusChange>;
+                 YaUnitHandler2::NotifyUnitByBusChange
+#ifdef WITH_ARA
+                 ,
+                 YaAra::HostCallback::CreateAudioReader,
+                 YaAra::HostCallback::DestroyAudioReader,
+                 YaAra::HostCallback::GetArchiveSize,
+                 YaAra::HostCallback::ReadBytesFromArchive,
+                 YaAra::HostCallback::WriteBytesToArchive,
+                 YaAra::HostCallback::NotifyDocumentArchivingProgress,
+                 YaAra::HostCallback::NotifyDocumentUnarchivingProgress,
+                 YaAra::HostCallback::GetDocumentArchiveID,
+                 YaAra::HostCallback::IsMusicalContextContentAvailable,
+                 YaAra::HostCallback::GetMusicalContextContentGrade,
+                 YaAra::HostCallback::CreateMusicalContextContentReader,
+                 YaAra::HostCallback::IsAudioSourceContentAvailable,
+                 YaAra::HostCallback::GetAudioSourceContentGrade,
+                 YaAra::HostCallback::CreateAudioSourceContentReader,
+                 YaAra::HostCallback::GetContentReaderEventCount,
+                 YaAra::HostCallback::GetContentReaderDataForEvent,
+                 YaAra::HostCallback::DestroyContentReader,
+                 YaAra::HostCallback::NotifyAudioSourceAnalysisProgress,
+                 YaAra::HostCallback::NotifyAudioSourceContentChanged,
+                 YaAra::HostCallback::NotifyAudioModificationContentChanged,
+                 YaAra::HostCallback::NotifyPlaybackRegionContentChanged,
+                 YaAra::HostCallback::NotifyDocumentDataChanged,
+                 YaAra::HostCallback::RequestStartPlayback,
+                 YaAra::HostCallback::RequestStopPlayback,
+                 YaAra::HostCallback::RequestSetPlaybackPosition,
+                 YaAra::HostCallback::RequestSetCycleRange,
+                 YaAra::HostCallback::RequestEnableCycle
+#endif
+                 >;
 
 template <typename S>
 void serialize(S& s, Vst3CallbackRequest& payload) {

@@ -16,6 +16,8 @@
 
 #ifdef WITH_ARA
 
+#include <cassert>
+
 #include "ara-factory.h"
 
 // ---------------------------------------------------------------------------
@@ -77,7 +79,11 @@ YaAraFactory::ipc_create_document_controller(
 // ---------------------------------------------------------------------------
 
 void YaAraFactory::fill_factory_fields(ARA::ARAFactory& factory) const {
-    compatible_archive_id_ptrs_.clear();
+    assert(!fill_called_ &&
+           "fill_factory_fields must only be called once; the returned const "
+           "char* arrays are invalidated on subsequent calls");
+    fill_called_ = true;
+
     compatible_archive_id_ptrs_.reserve(compatibleDocumentArchiveIDs.size());
     for (const auto& id : compatibleDocumentArchiveIDs)
         compatible_archive_id_ptrs_.push_back(id.c_str());
@@ -181,37 +187,43 @@ YaAraFactory from_ara_factory(const ARA::ARAFactory* factory) {
         factory->informationURL ? factory->informationURL : "";
     result.version = factory->version ? factory->version : "";
 
-    if (factory->structSize >= sizeof(ARA::ARAFactory)) {
+    if (ARA_IMPLEMENTS_FIELD(factory, ARAFactory, documentArchiveID))
         result.documentArchiveID =
             factory->documentArchiveID ? factory->documentArchiveID : "";
 
-        if (factory->compatibleDocumentArchiveIDs) {
-            result.compatibleDocumentArchiveIDs.reserve(
-                factory->compatibleDocumentArchiveIDsCount);
-            for (ARA::ARASize i = 0;
-                 i < factory->compatibleDocumentArchiveIDsCount; ++i) {
-                result.compatibleDocumentArchiveIDs.push_back(
-                    factory->compatibleDocumentArchiveIDs[i]
-                        ? factory->compatibleDocumentArchiveIDs[i]
-                        : "");
-            }
+    if (ARA_IMPLEMENTS_FIELD(factory, ARAFactory, compatibleDocumentArchiveIDsCount) &&
+        ARA_IMPLEMENTS_FIELD(factory, ARAFactory, compatibleDocumentArchiveIDs) &&
+        factory->compatibleDocumentArchiveIDs) {
+        result.compatibleDocumentArchiveIDs.reserve(
+            factory->compatibleDocumentArchiveIDsCount);
+        for (ARA::ARASize i = 0;
+             i < factory->compatibleDocumentArchiveIDsCount; ++i) {
+            result.compatibleDocumentArchiveIDs.push_back(
+                factory->compatibleDocumentArchiveIDs[i]
+                    ? factory->compatibleDocumentArchiveIDs[i]
+                    : "");
         }
+    }
 
-        if (factory->analyzeableContentTypes) {
-            result.analyzeableContentTypes.reserve(
-                factory->analyzeableContentTypesCount);
-            for (ARA::ARASize i = 0;
-                 i < factory->analyzeableContentTypesCount; ++i) {
-                result.analyzeableContentTypes.push_back(
-                    static_cast<int32_t>(factory->analyzeableContentTypes[i]));
-            }
+    if (ARA_IMPLEMENTS_FIELD(factory, ARAFactory, analyzeableContentTypesCount) &&
+        ARA_IMPLEMENTS_FIELD(factory, ARAFactory, analyzeableContentTypes) &&
+        factory->analyzeableContentTypes) {
+        result.analyzeableContentTypes.reserve(
+            factory->analyzeableContentTypesCount);
+        for (ARA::ARASize i = 0;
+             i < factory->analyzeableContentTypesCount; ++i) {
+            result.analyzeableContentTypes.push_back(
+                static_cast<int32_t>(factory->analyzeableContentTypes[i]));
         }
+    }
 
+    if (ARA_IMPLEMENTS_FIELD(factory, ARAFactory, supportedPlaybackTransformationFlags))
         result.supportedPlaybackTransformationFlags =
             static_cast<int32_t>(factory->supportedPlaybackTransformationFlags);
+
+    if (ARA_IMPLEMENTS_FIELD(factory, ARAFactory, supportsStoringAudioFileChunks))
         result.supportsStoringAudioFileChunks =
             static_cast<int32_t>(factory->supportsStoringAudioFileChunks);
-    }
 
     return result;
 }

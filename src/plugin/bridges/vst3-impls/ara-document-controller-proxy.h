@@ -19,6 +19,7 @@
 #ifdef WITH_ARA
 
 #include <atomic>
+#include <mutex>
 #include <unordered_map>
 
 #include <ARAInterface.h>
@@ -40,18 +41,39 @@ class AraDocumentControllerProxy {
         return ara_dc_instance_;
     }
 
+    native_size_t ara_dc_id() const noexcept { return ara_dc_id_; }
+
     // Host-ref maps, keyed by the uint64_t handle we send over IPC.
     // These let task 8 (host callbacks) resolve handles back to host refs.
+    // Protected by host_refs_mutex_; acquire before reading or writing.
+    std::mutex host_refs_mutex_;
     std::unordered_map<uint64_t, ARA::ARAMusicalContextHostRef>
         musical_context_host_refs_;
     std::unordered_map<uint64_t, ARA::ARARegionSequenceHostRef>
         region_sequence_host_refs_;
     std::unordered_map<uint64_t, ARA::ARAAudioSourceHostRef>
         audio_source_host_refs_;
+    // Channel count for each audio source, keyed by the same handle as
+    // audio_source_host_refs_. Used to fill CreateAudioReader responses.
+    std::unordered_map<uint64_t, int32_t>
+        audio_source_channel_counts_;
     std::unordered_map<uint64_t, ARA::ARAAudioModificationHostRef>
         audio_modification_host_refs_;
     std::unordered_map<uint64_t, ARA::ARAPlaybackRegionHostRef>
         playback_region_host_refs_;
+
+    // Content reader host refs, created by the host and tracked per DC.
+    std::unordered_map<uint64_t, ARA::ARAContentReaderHostRef>
+        content_reader_host_refs_;
+    std::atomic_uint64_t next_content_reader_handle_{1};
+
+    // Audio reader host refs created by the host.
+    std::unordered_map<uint64_t, ARA::ARAAudioReaderHostRef>
+        audio_reader_host_refs_;
+    std::atomic_uint64_t next_audio_reader_handle_{1};
+
+    // The DAW's host callback interfaces, valid for the lifetime of this DC.
+    const ARA::ARADocumentControllerHostInstance* host_instance_ = nullptr;
 
    private:
     static AraDocumentControllerProxy* self(

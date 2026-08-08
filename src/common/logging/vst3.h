@@ -286,6 +286,74 @@ class Vst3Logger {
                       const std::variant<uint64_t, UniversalTResult>&);
     void log_response(bool is_host_plugin,
                       const std::variant<int32_t, UniversalTResult>&);
+
+    // ARA host callback request types (plugin -> host)
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::CreateAudioReader&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::DestroyAudioReader&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::GetArchiveSize&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::ReadBytesFromArchive&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::WriteBytesToArchive&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::NotifyDocumentArchivingProgress&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::NotifyDocumentUnarchivingProgress&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::GetDocumentArchiveID&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::IsMusicalContextContentAvailable&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::GetMusicalContextContentGrade&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::CreateMusicalContextContentReader&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::IsAudioSourceContentAvailable&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::GetAudioSourceContentGrade&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::CreateAudioSourceContentReader&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::GetContentReaderEventCount&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::GetContentReaderDataForEvent&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::DestroyContentReader&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::NotifyAudioSourceAnalysisProgress&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::NotifyAudioSourceContentChanged&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::NotifyAudioModificationContentChanged&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::NotifyPlaybackRegionContentChanged&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::NotifyDocumentDataChanged&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::RequestStartPlayback&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::RequestStopPlayback&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::RequestSetPlaybackPosition&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::RequestSetCycleRange&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::HostCallback::RequestEnableCycle&);
+
+    // ARA host callback response types
+    void log_response(bool is_host_plugin,
+                      const YaAra::HostCallback::CreateAudioReader::Response&);
+    void log_response(bool is_host_plugin,
+                      const YaAra::HostCallback::HandleResponse&);
+    void log_response(bool is_host_plugin,
+                      const YaAra::HostCallback::Int32Response&);
+    void log_response(bool is_host_plugin,
+                      const YaAra::HostCallback::BytesResponse&);
+    void log_response(bool is_host_plugin,
+                      const YaAra::HostCallback::StringResponse&);
 #endif  // WITH_ARA
 
     // Main thread callbacks

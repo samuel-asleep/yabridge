@@ -335,7 +335,10 @@ AraDocumentControllerProxy::create_musical_context(
     const ARA::ARAMusicalContextProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_musical_context_handle_.fetch_add(1);
-    p->musical_context_host_refs_[handle] = hostRef;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->musical_context_host_refs_[handle] = hostRef;
+    }
     auto result = p->bridge_.send_message(YaAra::AddMusicalContext{
         p->ara_dc_id_, handle, to_ya(properties)});
     return std::visit(
@@ -388,7 +391,12 @@ ARA::ARAAudioSourceRef ARA_CALL AraDocumentControllerProxy::create_audio_source(
     const ARA::ARAAudioSourceProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_audio_source_handle_.fetch_add(1);
-    p->audio_source_host_refs_[handle] = hostRef;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->audio_source_host_refs_[handle] = hostRef;
+        p->audio_source_channel_counts_[handle] =
+            properties ? properties->channelCount : 0;
+    }
     auto result = p->bridge_.send_message(YaAra::AddAudioSource{
         p->ara_dc_id_, handle, to_ya(properties)});
     return std::visit(
@@ -466,7 +474,10 @@ AraDocumentControllerProxy::create_audio_modification(
     const ARA::ARAAudioModificationProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_audio_modification_handle_.fetch_add(1);
-    p->audio_modification_host_refs_[handle] = hostRef;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->audio_modification_host_refs_[handle] = hostRef;
+    }
     auto result = p->bridge_.send_message(YaAra::AddAudioModification{
         p->ara_dc_id_,
         reinterpret_cast<uint64_t>(audioSourceRef),
@@ -490,7 +501,10 @@ AraDocumentControllerProxy::clone_audio_modification(
     const ARA::ARAAudioModificationProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_audio_modification_handle_.fetch_add(1);
-    p->audio_modification_host_refs_[handle] = hostRef;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->audio_modification_host_refs_[handle] = hostRef;
+    }
     auto result = p->bridge_.send_message(YaAra::CloneAudioModification{
         p->ara_dc_id_,
         reinterpret_cast<uint64_t>(audioModificationRef),
@@ -547,7 +561,10 @@ AraDocumentControllerProxy::create_playback_region(
     const ARA::ARAPlaybackRegionProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_playback_region_handle_.fetch_add(1);
-    p->playback_region_host_refs_[handle] = hostRef;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->playback_region_host_refs_[handle] = hostRef;
+    }
     auto result = p->bridge_.send_message(YaAra::AddPlaybackRegion{
         p->ara_dc_id_,
         reinterpret_cast<uint64_t>(audioModificationRef),
@@ -590,7 +607,10 @@ AraDocumentControllerProxy::create_region_sequence(
     const ARA::ARARegionSequenceProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_region_sequence_handle_.fetch_add(1);
-    p->region_sequence_host_refs_[handle] = hostRef;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->region_sequence_host_refs_[handle] = hostRef;
+    }
     auto result = p->bridge_.send_message(YaAra::AddRegionSequence{
         p->ara_dc_id_, handle, to_ya(properties)});
     return std::visit(
@@ -637,7 +657,7 @@ AraDocumentControllerProxy::is_audio_source_content_analysis_incomplete(
     ARA::ARADocumentControllerRef /*r*/,
     ARA::ARAAudioSourceRef /*audioSourceRef*/,
     ARA::ARAContentType /*contentType*/) {
-    return ARA::kARATrue;
+    return ARA::kARAFalse;
 }
 
 void ARA_CALL AraDocumentControllerProxy::request_audio_source_content_analysis(
@@ -771,22 +791,30 @@ ARA::ARABool ARA_CALL AraDocumentControllerProxy::restore_objects_from_archive(
         if (filter->audioSourceArchiveIDs) {
             for (ARA::ARASize i = 0; i < filter->audioSourceIDsCount; ++i)
                 f.audio_source_archive_ids.push_back(
-                    filter->audioSourceArchiveIDs[i]);
+                    filter->audioSourceArchiveIDs[i]
+                        ? filter->audioSourceArchiveIDs[i]
+                        : "");
         }
         if (filter->audioSourceCurrentIDs) {
             for (ARA::ARASize i = 0; i < filter->audioSourceIDsCount; ++i)
                 f.audio_source_current_ids.push_back(
-                    filter->audioSourceCurrentIDs[i]);
+                    filter->audioSourceCurrentIDs[i]
+                        ? filter->audioSourceCurrentIDs[i]
+                        : "");
         }
         if (filter->audioModificationArchiveIDs) {
             for (ARA::ARASize i = 0; i < filter->audioModificationIDsCount; ++i)
                 f.audio_modification_archive_ids.push_back(
-                    filter->audioModificationArchiveIDs[i]);
+                    filter->audioModificationArchiveIDs[i]
+                        ? filter->audioModificationArchiveIDs[i]
+                        : "");
         }
         if (filter->audioModificationCurrentIDs) {
             for (ARA::ARASize i = 0; i < filter->audioModificationIDsCount; ++i)
                 f.audio_modification_current_ids.push_back(
-                    filter->audioModificationCurrentIDs[i]);
+                    filter->audioModificationCurrentIDs[i]
+                        ? filter->audioModificationCurrentIDs[i]
+                        : "");
         }
         ya_filter = std::move(f);
     }

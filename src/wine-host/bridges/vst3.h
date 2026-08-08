@@ -18,12 +18,16 @@
 
 #include <iostream>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <unordered_map>
 
 #include <public.sdk/source/vst/hosting/module.h>
 
 #ifdef WITH_ARA
+#include "../ara-wine-abi.h"
 #include <ARAVST3.h>
 #endif
 
@@ -32,6 +36,10 @@
 #include "../../common/mutual-recursion.h"
 #include "../editor.h"
 #include "common.h"
+
+#ifdef WITH_ARA
+#include "vst3-impls/ara-host-callback-proxies.h"
+#endif
 
 // Forward declarations
 class Vst3ContextMenuProxyImpl;
@@ -529,7 +537,7 @@ class Vst3Bridge : public HostBridge {
      *
      * @related generate_instance_id
      */
-    std::atomic_size_t current_instance_id_;
+    std::atomic_size_t current_instance_id_ = 1;
 
     /**
      * The host context proxy object if we got passed a host context during a
@@ -588,4 +596,10 @@ class Vst3Bridge : public HostBridge {
      *       `IComponentHandler::performEdit()` wasn't called from there.
      */
     MutualRecursionHelper<Win32Thread> audio_thread_mutual_recursion_;
+
+#ifdef WITH_ARA
+    std::unordered_map<native_size_t, std::unique_ptr<AraDocumentControllerInstance>>
+        ara_document_controllers_;
+    std::mutex ara_document_controllers_mutex_;
+#endif
 };
