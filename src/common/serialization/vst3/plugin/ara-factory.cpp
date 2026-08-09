@@ -16,6 +16,7 @@
 
 #ifdef WITH_ARA
 
+#include <algorithm>
 #include <cassert>
 
 #include "ara-factory.h"
@@ -53,25 +54,26 @@ const ARA::ARADocumentControllerInstance* ARA_CALL
 YaAraFactory::ipc_create_document_controller(
     const ARA::ARADocumentControllerHostInstance* hostInstance,
     const ARA::ARADocumentProperties* properties) {
-    // We cannot identify *which* factory is being called from the arguments
-    // alone.  If exactly one factory is registered with IPC support, dispatch
-    // to it directly.  If multiple are registered we pick the one whose
-    // factoryID matches the properties (not available here), so we must rely
-    // on the fact that in a single-bridge process there is typically one
-    // registered factory at a time.
-    //
-    // In the rare multi-factory case the first registered entry is used — this
-    // is acceptable for the current implementation scope.
-    std::lock_guard lock(registry_mutex());
-    auto& reg = registry();
-    for (auto& [key, entry] : reg) {
-        if (entry.create_dc) {
-            const native_size_t dc_id =
-                entry.next_dc_id.fetch_add(1, std::memory_order_relaxed);
-            return entry.create_dc(hostInstance, properties, dc_id);
+    AraCreateDcFn callback;
+    native_size_t dc_id;
+    {
+        std::lock_guard lock(registry_mutex());
+        auto& reg = registry();
+        AraCreateDcFn* found = nullptr;
+        std::atomic<native_size_t>* counter = nullptr;
+        for (auto& [key, entry] : reg) {
+            if (entry.create_dc) {
+                found = &entry.create_dc;
+                counter = &entry.next_dc_id;
+                break;
+            }
         }
+        if (!found)
+            return nullptr;
+        dc_id = counter->fetch_add(1, std::memory_order_relaxed);
+        callback = *found;
     }
-    return nullptr;
+    return callback(hostInstance, properties, dc_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -79,11 +81,11 @@ YaAraFactory::ipc_create_document_controller(
 // ---------------------------------------------------------------------------
 
 void YaAraFactory::fill_factory_fields(ARA::ARAFactory& factory) const {
-    assert(!fill_called_ &&
-           "fill_factory_fields must only be called once; the returned const "
-           "char* arrays are invalidated on subsequent calls");
+    if (fill_called_)
+        return;
     fill_called_ = true;
 
+    compatible_archive_id_ptrs_.clear();
     compatible_archive_id_ptrs_.reserve(compatibleDocumentArchiveIDs.size());
     for (const auto& id : compatibleDocumentArchiveIDs)
         compatible_archive_id_ptrs_.push_back(id.c_str());
@@ -138,11 +140,8 @@ ARA::ARAFactory YaAraFactory::to_ara_factory(
             ipc_create_document_controller;
 
         std::lock_guard lock(registry_mutex());
-        // Key on the address of factoryID's internal buffer — stable and
-        // unique per YaAraFactory instance.
         auto& entry = registry()[factoryID.c_str()];
         entry.create_dc = std::move(create_dc);
-        entry.owner = const_cast<YaAraFactory*>(this);
         registered_ = true;
     } else {
         factory.createDocumentControllerWithDocument =
@@ -194,10 +193,11 @@ YaAraFactory from_ara_factory(const ARA::ARAFactory* factory) {
     if (ARA_IMPLEMENTS_FIELD(factory, ARAFactory, compatibleDocumentArchiveIDsCount) &&
         ARA_IMPLEMENTS_FIELD(factory, ARAFactory, compatibleDocumentArchiveIDs) &&
         factory->compatibleDocumentArchiveIDs) {
-        result.compatibleDocumentArchiveIDs.reserve(
-            factory->compatibleDocumentArchiveIDsCount);
-        for (ARA::ARASize i = 0;
-             i < factory->compatibleDocumentArchiveIDsCount; ++i) {
+        const ARA::ARASize limit =
+            std::min(factory->compatibleDocumentArchiveIDsCount,
+                     static_cast<ARA::ARASize>(256));
+        result.compatibleDocumentArchiveIDs.reserve(limit);
+        for (ARA::ARASize i = 0; i < limit; ++i) {
             result.compatibleDocumentArchiveIDs.push_back(
                 factory->compatibleDocumentArchiveIDs[i]
                     ? factory->compatibleDocumentArchiveIDs[i]
@@ -208,10 +208,11 @@ YaAraFactory from_ara_factory(const ARA::ARAFactory* factory) {
     if (ARA_IMPLEMENTS_FIELD(factory, ARAFactory, analyzeableContentTypesCount) &&
         ARA_IMPLEMENTS_FIELD(factory, ARAFactory, analyzeableContentTypes) &&
         factory->analyzeableContentTypes) {
-        result.analyzeableContentTypes.reserve(
-            factory->analyzeableContentTypesCount);
-        for (ARA::ARASize i = 0;
-             i < factory->analyzeableContentTypesCount; ++i) {
+        const ARA::ARASize limit =
+            std::min(factory->analyzeableContentTypesCount,
+                     static_cast<ARA::ARASize>(256));
+        result.analyzeableContentTypes.reserve(limit);
+        for (ARA::ARASize i = 0; i < limit; ++i) {
             result.analyzeableContentTypes.push_back(
                 static_cast<int32_t>(factory->analyzeableContentTypes[i]));
         }

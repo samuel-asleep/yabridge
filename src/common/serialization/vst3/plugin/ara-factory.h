@@ -119,14 +119,11 @@ struct YaAraFactory {
     // YaAraFactory, value = {create_dc callback, next_dc_id counter}.
     struct RegistryEntry {
         AraCreateDcFn create_dc;
-        YaAraFactory* owner;
         std::atomic<native_size_t> next_dc_id{1};
-        // Disable copy since atomic is not copyable
         RegistryEntry() = default;
-        RegistryEntry(AraCreateDcFn dc, YaAraFactory* o)
-            : create_dc(std::move(dc)), owner(o) {}
-        RegistryEntry(RegistryEntry&&) = default;
-        RegistryEntry& operator=(RegistryEntry&&) = default;
+        explicit RegistryEntry(AraCreateDcFn dc) : create_dc(std::move(dc)) {}
+        RegistryEntry(RegistryEntry&&) = delete;
+        RegistryEntry& operator=(RegistryEntry&&) = delete;
         RegistryEntry(const RegistryEntry&) = delete;
         RegistryEntry& operator=(const RegistryEntry&) = delete;
     };
@@ -148,11 +145,20 @@ struct YaAraPlugInExtensionInstance {
     bool has_editor_renderer = false;
     bool has_editor_view = false;
 
+    // Opaque renderer refs from the Wine plugin; sent back with every
+    // renderer interface call so the Wine side can route to the right object.
+    uint64_t playback_renderer_ref = 0;
+    uint64_t editor_renderer_ref = 0;
+    uint64_t editor_view_ref = 0;
+
     template <typename S>
     void serialize(S& s) {
         s.value1b(has_playback_renderer);
         s.value1b(has_editor_renderer);
         s.value1b(has_editor_view);
+        s.value8b(playback_renderer_ref);
+        s.value8b(editor_renderer_ref);
+        s.value8b(editor_view_ref);
     }
 };
 

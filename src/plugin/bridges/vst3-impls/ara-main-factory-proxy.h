@@ -34,6 +34,11 @@ class YaMainFactoryImpl : public ARA::IMainFactory {
 
     virtual ~YaMainFactoryImpl() noexcept;
 
+    YaMainFactoryImpl(const YaMainFactoryImpl&) = delete;
+    YaMainFactoryImpl& operator=(const YaMainFactoryImpl&) = delete;
+    YaMainFactoryImpl(YaMainFactoryImpl&&) = delete;
+    YaMainFactoryImpl& operator=(YaMainFactoryImpl&&) = delete;
+
     DECLARE_FUNKNOWN_METHODS
 
     const ARA::ARAFactory* PLUGIN_API getFactory() override;

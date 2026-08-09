@@ -354,6 +354,37 @@ class Vst3Logger {
                       const YaAra::HostCallback::BytesResponse&);
     void log_response(bool is_host_plugin,
                       const YaAra::HostCallback::StringResponse&);
+
+    // ARA audio sample transfer (plugin -> host via shm, in Vst3CallbackRequest)
+    bool log_request(bool is_host_plugin, const YaAra::CreateAudioReader&);
+    bool log_request(bool is_host_plugin, const YaAra::DestroyAudioReader&);
+    bool log_request(bool is_host_plugin, const YaAra::ReadAudioSamples&);
+    void log_response(bool is_host_plugin,
+                      const YaAra::CreateAudioReader::Response&);
+    void log_response(bool is_host_plugin,
+                      const YaAra::ReadAudioSamples::Response&);
+
+    // ARA plugin extension interface calls (host -> plugin)
+    bool log_request(bool is_host_plugin,
+                     const YaAra::PluginExtension::PlaybackRendererAddRegion&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::PluginExtension::PlaybackRendererRemoveRegion&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::PluginExtension::EditorRendererAddRegion&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::PluginExtension::EditorRendererRemoveRegion&);
+    bool log_request(
+        bool is_host_plugin,
+        const YaAra::PluginExtension::EditorRendererAddRegionSequence&);
+    bool log_request(
+        bool is_host_plugin,
+        const YaAra::PluginExtension::EditorRendererRemoveRegionSequence&);
+    bool log_request(
+        bool is_host_plugin,
+        const YaAra::PluginExtension::EditorViewNotifySelection&);
+    bool log_request(
+        bool is_host_plugin,
+        const YaAra::PluginExtension::EditorViewNotifyHideRegionSequences&);
 #endif  // WITH_ARA
 
     // Main thread callbacks

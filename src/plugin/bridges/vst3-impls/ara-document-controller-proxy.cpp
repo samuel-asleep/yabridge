@@ -24,7 +24,7 @@ namespace {
 
 YaAraDocumentProperties to_ya(const ARA::ARADocumentProperties* p) {
     YaAraDocumentProperties out{};
-    if (p && p->name)
+    if (p && ARA_IMPLEMENTS_FIELD(p, ARADocumentProperties, name) && p->name)
         out.name = p->name;
     return out;
 }
@@ -72,8 +72,8 @@ YaArAAudioSourceProperties to_ya(const ARA::ARAAudioSourceProperties* p) {
     out.merits_64bit_samples = p->merits64BitSamples;
     if (ARA_IMPLEMENTS_FIELD(p, ARAAudioSourceProperties,
                              channelArrangementDataType) &&
-        p->channelArrangementDataType !=
-            ARA::kARAChannelArrangementUndefined &&
+        p->channelArrangementDataType ==
+            ARA::kARAChannelArrangementVST3SpeakerArrangement &&
         p->channelArrangement) {
         // Encode channel arrangement data as raw bytes
         // The data size depends on the companion API type; we store it as bytes
@@ -242,8 +242,8 @@ void ARA_CALL AraDocumentControllerProxy::destroy(
 }
 
 const ARA::ARAFactory* ARA_CALL AraDocumentControllerProxy::get_factory(
-    ARA::ARADocumentControllerRef /*r*/) {
-    return nullptr;
+    ARA::ARADocumentControllerRef r) {
+    return self(r)->factory_;
 }
 
 void ARA_CALL AraDocumentControllerProxy::begin_editing(
@@ -382,6 +382,11 @@ void ARA_CALL AraDocumentControllerProxy::destroy_musical_context(
     p->bridge_.send_message(YaAra::RemoveMusicalContext{
         p->ara_dc_id_,
         reinterpret_cast<uint64_t>(musicalContextRef)});
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->musical_context_host_refs_.erase(
+            reinterpret_cast<uint64_t>(musicalContextRef));
+    }
 }
 
 
@@ -460,9 +465,13 @@ void ARA_CALL AraDocumentControllerProxy::destroy_audio_source(
     ARA::ARADocumentControllerRef r,
     ARA::ARAAudioSourceRef audioSourceRef) {
     auto* p = self(r);
-    p->bridge_.send_message(YaAra::RemoveAudioSource{
-        p->ara_dc_id_,
-        reinterpret_cast<uint64_t>(audioSourceRef)});
+    const uint64_t handle = reinterpret_cast<uint64_t>(audioSourceRef);
+    p->bridge_.send_message(YaAra::RemoveAudioSource{p->ara_dc_id_, handle});
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->audio_source_host_refs_.erase(handle);
+        p->audio_source_channel_counts_.erase(handle);
+    }
 }
 
 
@@ -547,9 +556,13 @@ void ARA_CALL AraDocumentControllerProxy::destroy_audio_modification(
     ARA::ARADocumentControllerRef r,
     ARA::ARAAudioModificationRef audioModificationRef) {
     auto* p = self(r);
-    p->bridge_.send_message(YaAra::RemoveAudioModification{
-        p->ara_dc_id_,
-        reinterpret_cast<uint64_t>(audioModificationRef)});
+    const uint64_t handle = reinterpret_cast<uint64_t>(audioModificationRef);
+    p->bridge_.send_message(
+        YaAra::RemoveAudioModification{p->ara_dc_id_, handle});
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->audio_modification_host_refs_.erase(handle);
+    }
 }
 
 
@@ -595,9 +608,13 @@ void ARA_CALL AraDocumentControllerProxy::destroy_playback_region(
     ARA::ARADocumentControllerRef r,
     ARA::ARAPlaybackRegionRef playbackRegionRef) {
     auto* p = self(r);
-    p->bridge_.send_message(YaAra::RemovePlaybackRegion{
-        p->ara_dc_id_,
-        reinterpret_cast<uint64_t>(playbackRegionRef)});
+    const uint64_t handle = reinterpret_cast<uint64_t>(playbackRegionRef);
+    p->bridge_.send_message(
+        YaAra::RemovePlaybackRegion{p->ara_dc_id_, handle});
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->playback_region_host_refs_.erase(handle);
+    }
 }
 
 ARA::ARARegionSequenceRef ARA_CALL
@@ -638,9 +655,13 @@ void ARA_CALL AraDocumentControllerProxy::destroy_region_sequence(
     ARA::ARADocumentControllerRef r,
     ARA::ARARegionSequenceRef regionSequenceRef) {
     auto* p = self(r);
-    p->bridge_.send_message(YaAra::RemoveRegionSequence{
-        p->ara_dc_id_,
-        reinterpret_cast<uint64_t>(regionSequenceRef)});
+    const uint64_t handle = reinterpret_cast<uint64_t>(regionSequenceRef);
+    p->bridge_.send_message(
+        YaAra::RemoveRegionSequence{p->ara_dc_id_, handle});
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->region_sequence_host_refs_.erase(handle);
+    }
 }
 
 

@@ -165,34 +165,75 @@ ARA::ARAAudioReaderHostRef ARA_CALL AraHostInstanceProxy::create_audio_reader(
     ARA::ARABool use64bit) {
     auto* p = proxy_from_audio_access(h);
     const auto resp = p->bridge_.send_message(
-        YaAra::HostCallback::CreateAudioReader{
+        YaAra::CreateAudioReader{
             p->ara_dc_id_,
             reinterpret_cast<uint64_t>(source),
-            static_cast<int32_t>(use64bit)});
-    if (resp.value == 0)
+            static_cast<bool>(use64bit)});
+    if (resp.reader_id == 0)
         return nullptr;
-    p->audio_reader_channel_count_map_.emplace(resp.value, resp.channel_count);
-    return reinterpret_cast<ARA::ARAAudioReaderHostRef>(resp.value);
+    {
+        std::lock_guard lock(p->audio_reader_map_mutex_);
+        p->audio_reader_channel_count_map_.insert_or_assign(
+            resp.reader_id,
+            resp.shm_config.input_offsets.empty()
+                ? 0
+                : static_cast<int32_t>(
+                      resp.shm_config.input_offsets[0].size()));
+        p->audio_reader_use64_map_.insert_or_assign(
+            resp.reader_id, static_cast<bool>(use64bit));
+        p->audio_reader_shm_buffers_.insert_or_assign(
+            resp.reader_id, AudioShmBuffer{resp.shm_config});
+    }
+    return reinterpret_cast<ARA::ARAAudioReaderHostRef>(resp.reader_id);
 }
 
 ARA::ARABool ARA_CALL AraHostInstanceProxy::read_audio_samples(
     ARA::ARAAudioAccessControllerHostRef h,
     ARA::ARAAudioReaderHostRef reader,
-    ARA::ARASamplePosition /*pos*/,
+    ARA::ARASamplePosition pos,
     ARA::ARASampleCount count,
     void* const buffers[]) {
     auto* p = proxy_from_audio_access(h);
     const uint64_t id = reinterpret_cast<uint64_t>(reader);
-    auto it = p->audio_reader_channel_count_map_.find(id);
-    const int32_t ch = (it != p->audio_reader_channel_count_map_.end())
-                           ? it->second
-                           : 0;
-    for (int32_t c = 0; c < ch && buffers; ++c) {
-        if (buffers[c])
-            std::memset(buffers[c], 0,
-                        static_cast<size_t>(count) * sizeof(float));
+    int32_t ch = 0;
+    bool use64 = false;
+    AudioShmBuffer* shm = nullptr;
+    {
+        std::lock_guard lock(p->audio_reader_map_mutex_);
+        auto ch_it = p->audio_reader_channel_count_map_.find(id);
+        if (ch_it != p->audio_reader_channel_count_map_.end())
+            ch = ch_it->second;
+        auto u64_it = p->audio_reader_use64_map_.find(id);
+        if (u64_it != p->audio_reader_use64_map_.end())
+            use64 = u64_it->second;
+        auto shm_it = p->audio_reader_shm_buffers_.find(id);
+        if (shm_it != p->audio_reader_shm_buffers_.end())
+            shm = &shm_it->second;
     }
-    return ARA::kARAFalse;
+    if (!shm || !buffers)
+        return ARA::kARAFalse;
+    const auto resp = p->bridge_.send_message(YaAra::ReadAudioSamples{
+        p->ara_dc_id_,
+        id,
+        static_cast<int64_t>(pos),
+        static_cast<int32_t>(count),
+        use64});
+    if (!resp.success)
+        return ARA::kARAFalse;
+    const size_t bytes_per_sample = use64 ? sizeof(double) : sizeof(float);
+    for (int32_t c = 0; c < ch; ++c) {
+        if (!buffers[static_cast<size_t>(c)])
+            continue;
+        const void* src =
+            use64
+                ? static_cast<const void*>(
+                      shm->input_channel_ptr<double>(0, static_cast<uint32_t>(c)))
+                : static_cast<const void*>(
+                      shm->input_channel_ptr<float>(0, static_cast<uint32_t>(c)));
+        std::memcpy(buffers[static_cast<size_t>(c)], src,
+                    static_cast<size_t>(count) * bytes_per_sample);
+    }
+    return ARA::kARATrue;
 }
 
 void ARA_CALL AraHostInstanceProxy::destroy_audio_reader(
@@ -200,9 +241,13 @@ void ARA_CALL AraHostInstanceProxy::destroy_audio_reader(
     ARA::ARAAudioReaderHostRef reader) {
     auto* p = proxy_from_audio_access(h);
     const uint64_t id = reinterpret_cast<uint64_t>(reader);
-    p->audio_reader_channel_count_map_.erase(id);
-    p->bridge_.send_message(YaAra::HostCallback::DestroyAudioReader{
-        p->ara_dc_id_, id});
+    {
+        std::lock_guard lock(p->audio_reader_map_mutex_);
+        p->audio_reader_channel_count_map_.erase(id);
+        p->audio_reader_use64_map_.erase(id);
+        p->audio_reader_shm_buffers_.erase(id);
+    }
+    p->bridge_.send_message(YaAra::DestroyAudioReader{p->ara_dc_id_, id});
 }
 
 // ---------------------------------------------------------------------------
@@ -331,8 +376,10 @@ AraHostInstanceProxy::create_musical_context_content_reader(
             reinterpret_cast<uint64_t>(ctx),
             static_cast<int32_t>(type),
             to_ya(range)}).value;
-    if (id != 0)
-        p->content_reader_type_map_.emplace(id, type);
+    if (id != 0) {
+        std::lock_guard lock(p->content_reader_type_map_mutex_);
+        p->content_reader_type_map_.insert_or_assign(id, type);
+    }
     return reinterpret_cast<ARA::ARAContentReaderHostRef>(id);
 }
 
@@ -376,8 +423,10 @@ AraHostInstanceProxy::create_audio_source_content_reader(
             reinterpret_cast<uint64_t>(source),
             static_cast<int32_t>(type),
             to_ya(range)}).value;
-    if (id != 0)
-        p->content_reader_type_map_.emplace(id, type);
+    if (id != 0) {
+        std::lock_guard lock(p->content_reader_type_map_mutex_);
+        p->content_reader_type_map_.insert_or_assign(id, type);
+    }
     return reinterpret_cast<ARA::ARAContentReaderHostRef>(id);
 }
 
@@ -397,9 +446,12 @@ const void* ARA_CALL AraHostInstanceProxy::get_content_reader_data_for_event(
     auto* p = proxy_from_content_access(h);
     const uint64_t id = reinterpret_cast<uint64_t>(reader);
     int32_t content_type = 0;
-    auto type_it = p->content_reader_type_map_.find(id);
-    if (type_it != p->content_reader_type_map_.end())
-        content_type = static_cast<int32_t>(type_it->second);
+    {
+        std::lock_guard lock(p->content_reader_type_map_mutex_);
+        auto type_it = p->content_reader_type_map_.find(id);
+        if (type_it != p->content_reader_type_map_.end())
+            content_type = static_cast<int32_t>(type_it->second);
+    }
     auto resp = p->bridge_.send_message(
         YaAra::HostCallback::GetContentReaderDataForEvent{
             p->ara_dc_id_,
@@ -447,7 +499,10 @@ void ARA_CALL AraHostInstanceProxy::destroy_content_reader(
     ARA::ARAContentReaderHostRef reader) {
     auto* p = proxy_from_content_access(h);
     const uint64_t id = reinterpret_cast<uint64_t>(reader);
-    p->content_reader_type_map_.erase(id);
+    {
+        std::lock_guard lock(p->content_reader_type_map_mutex_);
+        p->content_reader_type_map_.erase(id);
+    }
     p->bridge_.send_message(YaAra::HostCallback::DestroyContentReader{
         p->ara_dc_id_, id});
 }

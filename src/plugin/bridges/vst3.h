@@ -211,20 +211,13 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      */
     const ARA::ARADocumentControllerInstance* register_ara_document_controller(
         native_size_t ara_dc_id,
-        const ARA::ARADocumentControllerHostInstance* host_instance);
+        const ARA::ARADocumentControllerHostInstance* host_instance,
+        const ARA::ARAFactory* factory = nullptr);
 
     /**
      * Remove and destroy the document controller proxy for the given DC ID.
      */
     void unregister_ara_document_controller(native_size_t ara_dc_id);
-
-    /**
-     * All active ARA document controller proxies, keyed by their ara_dc_id.
-     */
-    std::unordered_map<native_size_t,
-                       std::unique_ptr<class AraDocumentControllerProxy>>
-        ara_document_controllers_;
-    std::mutex ara_document_controllers_mutex_;
 #endif
 
    private:
@@ -256,6 +249,13 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      */
     std::unordered_map<size_t, std::reference_wrapper<Vst3PluginProxyImpl>>
         plugin_proxies_;
+
+#ifdef WITH_ARA
+    std::unordered_map<native_size_t,
+                       std::shared_ptr<AraDocumentControllerProxy>>
+        ara_document_controllers_;
+    std::mutex ara_document_controllers_mutex_;
+#endif
 
     /**
      * In theory all object handling is safe iff the host also doesn't do

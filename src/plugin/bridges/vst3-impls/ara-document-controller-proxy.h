@@ -24,6 +24,7 @@
 
 #include <ARAInterface.h>
 
+#include "../../../common/audio-shm.h"
 #include "../../../common/serialization/vst3/ara-document-controller.h"
 
 class Vst3PluginBridge;
@@ -72,8 +73,18 @@ class AraDocumentControllerProxy {
         audio_reader_host_refs_;
     std::atomic_uint64_t next_audio_reader_handle_{1};
 
+    // Per-reader shared memory buffers for YaAra::ReadAudioSamples.
+    // Protected by audio_reader_shm_mutex_ (separate from host_refs_mutex_
+    // to allow concurrent ReadAudioSamples and Create/Destroy calls).
+    std::mutex audio_reader_shm_mutex_;
+    std::unordered_map<uint64_t, AudioShmBuffer> audio_reader_shm_buffers_;
+
     // The DAW's host callback interfaces, valid for the lifetime of this DC.
     const ARA::ARADocumentControllerHostInstance* host_instance_ = nullptr;
+
+    // Pointer to the factory C struct that owns this DC. Set by
+    // register_ara_document_controller so get_factory() can return it.
+    const ARA::ARAFactory* factory_ = nullptr;
 
    private:
     static AraDocumentControllerProxy* self(

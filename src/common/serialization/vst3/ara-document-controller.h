@@ -28,6 +28,7 @@
 
 #include "../../bitsery/ext/in-place-optional.h"
 #include "../../bitsery/ext/in-place-variant.h"
+#include "../../audio-shm.h"
 #include "../common.h"
 #include "base.h"
 #include "plugin/ara-factory.h"
@@ -625,6 +626,70 @@ struct RemovePlaybackRegion {
     }
 };
 
+// -- Audio sample transfer ---------------------------------------------------
+
+struct CreateAudioReader {
+    struct Response {
+        uint64_t reader_id = 0;
+        AudioShmBuffer::Config shm_config;
+
+        template <typename S>
+        void serialize(S& s) {
+            s.value8b(reader_id);
+            s.object(shm_config);
+        }
+    };
+
+    native_size_t ara_dc_id;
+    uint64_t audio_source_host_ref;
+    bool use_64bit;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_host_ref);
+        s.value1b(use_64bit);
+    }
+};
+
+struct DestroyAudioReader {
+    using Response = Ack;
+
+    native_size_t ara_dc_id;
+    uint64_t audio_reader_id;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_reader_id);
+    }
+};
+
+struct ReadAudioSamples {
+    struct Response {
+        bool success = false;
+        template <typename S>
+        void serialize(S& s) {
+            s.value1b(success);
+        }
+    };
+
+    native_size_t ara_dc_id;
+    uint64_t audio_reader_host_ref;
+    int64_t sample_position;
+    int32_t sample_count;
+    bool use_64bit;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_reader_host_ref);
+        s.value8b(sample_position);
+        s.value4b(sample_count);
+        s.value1b(use_64bit);
+    }
+};
+
 // -- Content / analysis ------------------------------------------------------
 
 struct RequestAudioSourceContentAnalysis {
@@ -1132,6 +1197,125 @@ struct RequestEnableCycle {
 };
 
 }  // namespace HostCallback
+
+// -- Plugin extension interface calls ----------------------------------------
+// These are host -> plugin calls on the ARAPlaybackRendererInterface,
+// ARAEditorRendererInterface, and ARAEditorViewInterface. They use
+// instance_id to route to the right plugin instance on the Wine side, plus
+// the opaque renderer ref returned by bindToDocumentControllerWithRoles.
+
+namespace PluginExtension {
+
+struct PlaybackRendererAddRegion {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t playback_renderer_ref;
+    uint64_t playback_region_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(playback_renderer_ref);
+        s.value8b(playback_region_ref);
+    }
+};
+
+struct PlaybackRendererRemoveRegion {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t playback_renderer_ref;
+    uint64_t playback_region_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(playback_renderer_ref);
+        s.value8b(playback_region_ref);
+    }
+};
+
+struct EditorRendererAddRegion {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t editor_renderer_ref;
+    uint64_t playback_region_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(editor_renderer_ref);
+        s.value8b(playback_region_ref);
+    }
+};
+
+struct EditorRendererRemoveRegion {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t editor_renderer_ref;
+    uint64_t playback_region_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(editor_renderer_ref);
+        s.value8b(playback_region_ref);
+    }
+};
+
+struct EditorRendererAddRegionSequence {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t editor_renderer_ref;
+    uint64_t region_sequence_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(editor_renderer_ref);
+        s.value8b(region_sequence_ref);
+    }
+};
+
+struct EditorRendererRemoveRegionSequence {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t editor_renderer_ref;
+    uint64_t region_sequence_ref;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(editor_renderer_ref);
+        s.value8b(region_sequence_ref);
+    }
+};
+
+struct EditorViewNotifySelection {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t editor_view_ref;
+    std::vector<uint64_t> playback_region_refs;
+    std::vector<uint64_t> region_sequence_refs;
+    std::optional<YaAraContentTimeRange> time_range;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(editor_view_ref);
+        s.container8b(playback_region_refs, 65536);
+        s.container8b(region_sequence_refs, 65536);
+        s.ext(time_range, bitsery::ext::StdOptional{},
+              [](S& s2, YaAraContentTimeRange& v) { s2.object(v); });
+    }
+};
+
+struct EditorViewNotifyHideRegionSequences {
+    using Response = Ack;
+    native_size_t instance_id;
+    uint64_t editor_view_ref;
+    std::vector<uint64_t> region_sequence_refs;
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(instance_id);
+        s.value8b(editor_view_ref);
+        s.container8b(region_sequence_refs, 65536);
+    }
+};
+
+}  // namespace PluginExtension
 
 }  // namespace YaAra
 

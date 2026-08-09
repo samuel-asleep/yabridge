@@ -18,6 +18,7 @@
 
 #ifdef WITH_ARA
 
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "../../ara-wine-abi.h"
 #include <ARAInterface.h>
 
+#include "../../../common/audio-shm.h"
 #include "../../../common/serialization/vst3/ara-document-controller.h"
 
 class Vst3Bridge;
@@ -204,12 +206,19 @@ private:
     // create_{musical_context,audio_source}_content_reader and erased by
     // destroy_content_reader so get_content_reader_data_for_event can send the
     // correct type.
+    std::mutex content_reader_type_map_mutex_;
     std::unordered_map<uint64_t, ARA::ARAContentType> content_reader_type_map_;
 
-    // Maps audio reader handle -> channel count, populated by
-    // create_audio_reader so read_audio_samples can zero the right number of
-    // channel buffers on failure.
+    // Maps audio reader handle -> channel count, protected by
+    // audio_reader_map_mutex_ since readAudioSamples() may be called from
+    // any thread concurrently with create/destroy.
+    std::mutex audio_reader_map_mutex_;
     std::unordered_map<uint64_t, int32_t> audio_reader_channel_count_map_;
+
+    // Per-reader shared memory buffers created by YaAra::CreateAudioReader.
+    // Keyed on reader_id, same mutex as above.
+    std::unordered_map<uint64_t, AudioShmBuffer> audio_reader_shm_buffers_;
+    std::unordered_map<uint64_t, bool> audio_reader_use64_map_;
 };
 
 // Stores the plugin-side document controller ref and the host callback proxies.

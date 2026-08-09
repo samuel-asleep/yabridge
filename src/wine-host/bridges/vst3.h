@@ -23,6 +23,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <public.sdk/source/vst/hosting/module.h>
 
@@ -281,6 +282,12 @@ struct Vst3PluginInstance {
      * infinite loop trying to adjust the size to a specific target.
      */
     Steinberg::ViewRect last_set_size;
+
+#ifdef WITH_ARA
+    // The ARAPlugInExtensionInstance returned by bindToDocumentControllerWithRoles.
+    // Stored here so plugin extension interface calls can reach the right object.
+    const ARA::ARAPlugInExtensionInstance* ara_extension_instance = nullptr;
+#endif
 };
 
 /**
@@ -601,5 +608,7 @@ class Vst3Bridge : public HostBridge {
     std::unordered_map<native_size_t, std::unique_ptr<AraDocumentControllerInstance>>
         ara_document_controllers_;
     std::mutex ara_document_controllers_mutex_;
+    // Tracks which ARAFactory pointers have already had initializeARAWithConfiguration called.
+    std::unordered_set<const ARA::ARAFactory*> ara_initialized_factories_;
 #endif
 };

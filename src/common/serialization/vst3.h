@@ -176,7 +176,15 @@ using Vst3ControlRequest =
                  YaAra::RestoreObjectsFromArchive,
                  YaAra::StoreDocumentToArchive,
                  YaAra::BeginRestoringDocumentFromArchive,
-                 YaAra::EndRestoringDocumentFromArchive
+                 YaAra::EndRestoringDocumentFromArchive,
+                 YaAra::PluginExtension::PlaybackRendererAddRegion,
+                 YaAra::PluginExtension::PlaybackRendererRemoveRegion,
+                 YaAra::PluginExtension::EditorRendererAddRegion,
+                 YaAra::PluginExtension::EditorRendererRemoveRegion,
+                 YaAra::PluginExtension::EditorRendererAddRegionSequence,
+                 YaAra::PluginExtension::EditorRendererRemoveRegionSequence,
+                 YaAra::PluginExtension::EditorViewNotifySelection,
+                 YaAra::PluginExtension::EditorViewNotifyHideRegionSequences
 #endif
                  >;
 
@@ -343,7 +351,10 @@ using Vst3CallbackRequest =
                  YaAra::HostCallback::RequestStopPlayback,
                  YaAra::HostCallback::RequestSetPlaybackPosition,
                  YaAra::HostCallback::RequestSetCycleRange,
-                 YaAra::HostCallback::RequestEnableCycle
+                 YaAra::HostCallback::RequestEnableCycle,
+                 YaAra::CreateAudioReader,
+                 YaAra::DestroyAudioReader,
+                 YaAra::ReadAudioSamples
 #endif
                  >;
 

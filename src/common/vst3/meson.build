@@ -13,7 +13,7 @@ vst3_include_dir = vst3.get_variable('include_dir')
 # that `#include <ARAVST3.h>` works on both the native and Wine sides.
 ara_include_dirs = []
 if with_ara
-  ara = subproject('ara')
+  ara = subproject('ara', version : '2.3')
   ara_include_dirs = [ara.get_variable('ara_include_dir')]
 endif
 

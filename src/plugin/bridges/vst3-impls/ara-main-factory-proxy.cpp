@@ -18,6 +18,8 @@
 
 #include "ara-main-factory-proxy.h"
 
+#include <sstream>
+
 #include "../../../common/serialization/vst3/ara-document-controller.h"
 #include "../vst3.h"
 #include "ara-document-controller-proxy.h"
@@ -51,7 +53,7 @@ YaMainFactoryImpl::YaMainFactoryImpl(Vst3PluginBridge& bridge,
                 // createDocumentControllerWithDocument can resolve ara_dc_id.
                 const ARA::ARADocumentControllerInstance* dc_instance =
                     bridge_.register_ara_document_controller(
-                        ara_dc_id, hostInstance);
+                        ara_dc_id, hostInstance, &ara_factory_);
 
                 auto response = bridge_.send_message(
                     YaAra::CreateDocumentController{
@@ -79,6 +81,7 @@ YaMainFactoryImpl::YaMainFactoryImpl(Vst3PluginBridge& bridge,
                 bridge_.logger_.log(
                     "WARNING: exception in "
                     "createDocumentControllerWithDocument(), returning null");
+                bridge_.unregister_ara_document_controller(ara_dc_id);
                 return nullptr;
             }
         });

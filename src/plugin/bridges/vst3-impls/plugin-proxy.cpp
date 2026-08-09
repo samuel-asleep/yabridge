@@ -18,10 +18,11 @@
 
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
 
-#include "plug-view-proxy.h"
 #ifdef WITH_ARA
+#include "../../../common/serialization/vst3/ara-document-controller.h"
 #include "ara-document-controller-proxy.h"
 #endif
+#include "plug-view-proxy.h"
 
 /**
  * When the host tries to connect two plugin instances with connection proxies,
@@ -1382,12 +1383,12 @@ void Vst3PluginProxyImpl::clear_bus_cache() noexcept {
 
 #ifdef WITH_ARA
 
-#include "../../../common/serialization/vst3/ara-document-controller.h"
-#include "ara-document-controller-proxy.h"
-
 const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
-    if (ara_factory_cache_) {
-        return &ara_factory_c_struct_;
+    {
+        std::lock_guard lock(ara_factory_cache_mutex_);
+        if (ara_factory_cache_) {
+            return &ara_factory_c_struct_;
+        }
     }
 
     YaPlugInEntryPoint::GetFactory::Response response;
@@ -1404,6 +1405,7 @@ const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
     return std::visit(
         overload{
             [&](YaAraFactory&& factory) -> const ARA::ARAFactory* {
+                std::lock_guard lock(ara_factory_cache_mutex_);
                 ara_factory_cache_ = std::move(factory);
                 ara_factory_c_struct_ = ara_factory_cache_->to_ara_factory(
                     [this](
@@ -1448,7 +1450,9 @@ Vst3PluginProxyImpl::create_ara_document_controller(
         // Pre-register so host callbacks fired during
         // createDocumentControllerWithDocument can resolve ara_dc_id.
         const ARA::ARADocumentControllerInstance* dc_instance =
-            bridge_.register_ara_document_controller(ara_dc_id, hostInstance);
+            bridge_.register_ara_document_controller(
+                ara_dc_id, hostInstance,
+                ara_factory_cache_ ? &ara_factory_c_struct_ : nullptr);
 
         auto response = bridge_.send_message(YaAra::CreateDocumentController{
             .instance_id = instance_id(),
@@ -1475,6 +1479,7 @@ Vst3PluginProxyImpl::create_ara_document_controller(
         bridge_.logger_.log(
             "WARNING: exception in "
             "createDocumentControllerWithDocument(), returning null");
+        bridge_.unregister_ara_document_controller(ara_dc_id);
         return nullptr;
     }
 }
@@ -1493,6 +1498,13 @@ Vst3PluginProxyImpl::bindToDocumentControllerWithRoles(
     ARA::ARADocumentControllerRef documentControllerRef,
     ARA::ARAPlugInInstanceRoleFlags knownRoles,
     ARA::ARAPlugInInstanceRoleFlags assignedRoles) {
+    if (!documentControllerRef) {
+        bridge_.logger_.log(
+            "WARNING: bindToDocumentControllerWithRoles() called with null "
+            "documentControllerRef");
+        return nullptr;
+    }
+
     // documentControllerRef is AraDocumentControllerProxy* cast to ref.
     // Recover our integer ara_dc_id from it.
     auto* proxy = reinterpret_cast<AraDocumentControllerProxy*>(
@@ -1544,6 +1556,161 @@ Vst3PluginProxyImpl::bindToDocumentControllerWithRoles(
                 ara_extension_c_struct_.structSize =
                     ARA_IMPLEMENTED_STRUCT_SIZE(ARAPlugInExtensionInstance,
                                                editorViewInterface);
+
+                if (ara_extension_cache_->has_playback_renderer) {
+                    ara_playback_renderer_iface_ = {};
+                    ara_playback_renderer_iface_.structSize =
+                        ARA_IMPLEMENTED_STRUCT_SIZE(
+                            ARAPlaybackRendererInterface,
+                            removePlaybackRegion);
+                    ara_playback_renderer_iface_.addPlaybackRegion =
+                        [](ARA::ARAPlaybackRendererRef rendererRef,
+                           ARA::ARAPlaybackRegionRef regionRef) {
+                            auto* self = reinterpret_cast<Vst3PluginProxyImpl*>(
+                                rendererRef);
+                            self->bridge_.send_message(
+                                YaAra::PluginExtension::PlaybackRendererAddRegion{
+                                    self->instance_id(),
+                                    self->ara_extension_cache_->playback_renderer_ref,
+                                    reinterpret_cast<uint64_t>(regionRef)});
+                        };
+                    ara_playback_renderer_iface_.removePlaybackRegion =
+                        [](ARA::ARAPlaybackRendererRef rendererRef,
+                           ARA::ARAPlaybackRegionRef regionRef) {
+                            auto* self = reinterpret_cast<Vst3PluginProxyImpl*>(
+                                rendererRef);
+                            self->bridge_.send_message(
+                                YaAra::PluginExtension::PlaybackRendererRemoveRegion{
+                                    self->instance_id(),
+                                    self->ara_extension_cache_->playback_renderer_ref,
+                                    reinterpret_cast<uint64_t>(regionRef)});
+                        };
+                    // Use the proxy pointer as the ref so trampolines can recover it.
+                    ara_extension_c_struct_.playbackRendererRef =
+                        reinterpret_cast<ARA::ARAPlaybackRendererRef>(this);
+                    ara_extension_c_struct_.playbackRendererInterface =
+                        &ara_playback_renderer_iface_;
+                }
+                if (ara_extension_cache_->has_editor_renderer) {
+                    ara_editor_renderer_iface_ = {};
+                    ara_editor_renderer_iface_.structSize =
+                        ARA_IMPLEMENTED_STRUCT_SIZE(
+                            ARAEditorRendererInterface,
+                            removeRegionSequence);
+                    ara_editor_renderer_iface_.addPlaybackRegion =
+                        [](ARA::ARAEditorRendererRef rendererRef,
+                           ARA::ARAPlaybackRegionRef regionRef) {
+                            auto* self = reinterpret_cast<Vst3PluginProxyImpl*>(
+                                rendererRef);
+                            self->bridge_.send_message(
+                                YaAra::PluginExtension::EditorRendererAddRegion{
+                                    self->instance_id(),
+                                    self->ara_extension_cache_->editor_renderer_ref,
+                                    reinterpret_cast<uint64_t>(regionRef)});
+                        };
+                    ara_editor_renderer_iface_.removePlaybackRegion =
+                        [](ARA::ARAEditorRendererRef rendererRef,
+                           ARA::ARAPlaybackRegionRef regionRef) {
+                            auto* self = reinterpret_cast<Vst3PluginProxyImpl*>(
+                                rendererRef);
+                            self->bridge_.send_message(
+                                YaAra::PluginExtension::EditorRendererRemoveRegion{
+                                    self->instance_id(),
+                                    self->ara_extension_cache_->editor_renderer_ref,
+                                    reinterpret_cast<uint64_t>(regionRef)});
+                        };
+                    ara_editor_renderer_iface_.addRegionSequence =
+                        [](ARA::ARAEditorRendererRef rendererRef,
+                           ARA::ARARegionSequenceRef seqRef) {
+                            auto* self = reinterpret_cast<Vst3PluginProxyImpl*>(
+                                rendererRef);
+                            self->bridge_.send_message(
+                                YaAra::PluginExtension::EditorRendererAddRegionSequence{
+                                    self->instance_id(),
+                                    self->ara_extension_cache_->editor_renderer_ref,
+                                    reinterpret_cast<uint64_t>(seqRef)});
+                        };
+                    ara_editor_renderer_iface_.removeRegionSequence =
+                        [](ARA::ARAEditorRendererRef rendererRef,
+                           ARA::ARARegionSequenceRef seqRef) {
+                            auto* self = reinterpret_cast<Vst3PluginProxyImpl*>(
+                                rendererRef);
+                            self->bridge_.send_message(
+                                YaAra::PluginExtension::EditorRendererRemoveRegionSequence{
+                                    self->instance_id(),
+                                    self->ara_extension_cache_->editor_renderer_ref,
+                                    reinterpret_cast<uint64_t>(seqRef)});
+                        };
+                    ara_extension_c_struct_.editorRendererRef =
+                        reinterpret_cast<ARA::ARAEditorRendererRef>(this);
+                    ara_extension_c_struct_.editorRendererInterface =
+                        &ara_editor_renderer_iface_;
+                }
+                if (ara_extension_cache_->has_editor_view) {
+                    ara_editor_view_iface_ = {};
+                    ara_editor_view_iface_.structSize =
+                        ARA_IMPLEMENTED_STRUCT_SIZE(
+                            ARAEditorViewInterface,
+                            notifyHideRegionSequences);
+                    ara_editor_view_iface_.notifySelection =
+                        [](ARA::ARAEditorViewRef viewRef,
+                           const ARA::ARAViewSelection* selection) {
+                            auto* self =
+                                reinterpret_cast<Vst3PluginProxyImpl*>(viewRef);
+                            YaAra::PluginExtension::EditorViewNotifySelection msg{};
+                            msg.instance_id = self->instance_id();
+                            msg.editor_view_ref =
+                                self->ara_extension_cache_->editor_view_ref;
+                            if (selection) {
+                                if (selection->playbackRegionRefs) {
+                                    for (ARA::ARASize i = 0;
+                                         i < selection->playbackRegionRefsCount;
+                                         ++i)
+                                        msg.playback_region_refs.push_back(
+                                            reinterpret_cast<uint64_t>(
+                                                selection->playbackRegionRefs[i]));
+                                }
+                                if (selection->regionSequenceRefs) {
+                                    for (ARA::ARASize i = 0;
+                                         i < selection->regionSequenceRefsCount;
+                                         ++i)
+                                        msg.region_sequence_refs.push_back(
+                                            reinterpret_cast<uint64_t>(
+                                                selection->regionSequenceRefs[i]));
+                                }
+                                if (ARA_IMPLEMENTS_FIELD(selection,
+                                                         ARAViewSelection,
+                                                         timeRange) &&
+                                    selection->timeRange)
+                                    msg.time_range = YaAraContentTimeRange{
+                                        selection->timeRange->start,
+                                        selection->timeRange->duration};
+                            }
+                            self->bridge_.send_message(msg);
+                        };
+                    ara_editor_view_iface_.notifyHideRegionSequences =
+                        [](ARA::ARAEditorViewRef viewRef,
+                           ARA::ARASize count,
+                           const ARA::ARARegionSequenceRef refs[]) {
+                            auto* self =
+                                reinterpret_cast<Vst3PluginProxyImpl*>(viewRef);
+                            YaAra::PluginExtension::EditorViewNotifyHideRegionSequences
+                                msg{};
+                            msg.instance_id = self->instance_id();
+                            msg.editor_view_ref =
+                                self->ara_extension_cache_->editor_view_ref;
+                            if (refs) {
+                                for (ARA::ARASize i = 0; i < count; ++i)
+                                    msg.region_sequence_refs.push_back(
+                                        reinterpret_cast<uint64_t>(refs[i]));
+                            }
+                            self->bridge_.send_message(msg);
+                        };
+                    ara_extension_c_struct_.editorViewRef =
+                        reinterpret_cast<ARA::ARAEditorViewRef>(this);
+                    ara_extension_c_struct_.editorViewInterface =
+                        &ara_editor_view_iface_;
+                }
                 return &ara_extension_c_struct_;
             },
             [&](const UniversalTResult&)

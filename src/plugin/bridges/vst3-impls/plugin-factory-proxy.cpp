@@ -71,8 +71,9 @@ Vst3PluginFactoryProxyImpl::createInstance(Steinberg::FIDString cid,
                                           cid_array +
                                               std::extent_v<Steinberg::TUID>,
                                           info->cid) &&
-                               std::strcmp(info->category,
-                                           kARAMainFactoryClass) == 0;
+                               std::strncmp(info->category,
+                                            kARAMainFactoryClass,
+                                            Steinberg::PClassInfo::kCategorySize) == 0;
                     });
 
     if (is_ara_main_factory) {

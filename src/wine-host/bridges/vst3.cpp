@@ -17,6 +17,7 @@
 #include "vst3.h"
 
 #include <bitset>
+#include <cstring>
 
 #include "vst3-impls/component-handler-proxy.h"
 #include "vst3-impls/connection-point-proxy.h"
@@ -151,6 +152,16 @@ void Vst3Bridge::run() {
     }
 #endif
 
+#ifdef WITH_ARA
+    const auto resolve_dc =
+        [&](native_size_t ara_dc_id) -> AraDocumentControllerInstance* {
+        std::lock_guard lock(ara_document_controllers_mutex_);
+        auto it = ara_document_controllers_.find(ara_dc_id);
+        if (it == ara_document_controllers_.end())
+            return nullptr;
+        return it->second.get();
+    };
+#endif
     sockets_.host_plugin_control_.receive_messages(
         std::nullopt,
         overload{
@@ -1524,11 +1535,34 @@ void Vst3Bridge::run() {
         [&](YaPlugInEntryPoint::GetFactory& request)
             -> YaPlugInEntryPoint::GetFactory::Response {
             const auto& [instance, _] = get_instance(request.instance_id);
-            // IPlugInEntryPoint2 does not expose getFactory(); both interfaces
-            // share IPlugInEntryPoint for factory access.
+            // IPlugInEntryPoint exposes getFactory(); IPlugInEntryPoint2 does not.
+            // For IPlugInEntryPoint2-only plugins, fall back to scanning the
+            // module factory for a matching IMainFactory class.
             const ARA::ARAFactory* factory = nullptr;
             if (instance.interfaces.plug_in_entry_point) {
                 factory = instance.interfaces.plug_in_entry_point->getFactory();
+            } else if (instance.interfaces.plug_in_entry_point_2) {
+                Steinberg::IPtr<Steinberg::IPluginFactory> plug_factory(
+                    module_->getFactory().get());
+                if (plug_factory) {
+                    const int32_t count = plug_factory->countClasses();
+                    for (int32_t i = 0; i < count && !factory; ++i) {
+                        Steinberg::PClassInfo ci{};
+                        if (plug_factory->getClassInfo(i, &ci) !=
+                            Steinberg::kResultOk)
+                            continue;
+                        if (strcmp(ci.category, kARAMainFactoryClass) != 0)
+                            continue;
+                        ARA::IMainFactory* mf = nullptr;
+                        plug_factory->createInstance(
+                            ci.cid, ARA::IMainFactory::iid.toTUID(),
+                            reinterpret_cast<void**>(&mf));
+                        if (mf) {
+                            factory = mf->getFactory();
+                            mf->release();
+                        }
+                    }
+                }
             }
             if (factory) {
                 return from_ara_factory(factory);
@@ -1543,10 +1577,9 @@ void Vst3Bridge::run() {
             // document controller ref from the map.
             ARA::ARADocumentControllerRef dc_ref = nullptr;
             {
-                std::lock_guard dc_lock(ara_document_controllers_mutex_);
-                auto it = ara_document_controllers_.find(request.ara_dc_id);
-                if (it != ara_document_controllers_.end() && it->second)
-                    dc_ref = it->second->dc_ref;
+                auto* dc = resolve_dc(request.ara_dc_id);
+                if (dc)
+                    dc_ref = dc->dc_ref;
             }
             if (!dc_ref) {
                 return UniversalTResult(Steinberg::kResultFalse);
@@ -1623,11 +1656,23 @@ void Vst3Bridge::run() {
                 return UniversalTResult(Steinberg::kResultFalse);
             }
 
+            // Store for use by plugin extension interface calls.
+            {
+                auto [inst, _] = get_instance(request.instance_id);
+                inst.ara_extension_instance = ext;
+            }
+
             return YaAraPlugInExtensionInstance{
                 .has_playback_renderer =
                     ext->playbackRendererInterface != nullptr,
                 .has_editor_renderer = ext->editorRendererInterface != nullptr,
-                .has_editor_view = ext->editorViewInterface != nullptr};
+                .has_editor_view = ext->editorViewInterface != nullptr,
+                .playback_renderer_ref = reinterpret_cast<uint64_t>(
+                    ext->playbackRendererRef),
+                .editor_renderer_ref = reinterpret_cast<uint64_t>(
+                    ext->editorRendererRef),
+                .editor_view_ref = reinterpret_cast<uint64_t>(
+                    ext->editorViewRef)};
         },
         [&](const YaMainFactory::Construct& request)
             -> YaMainFactory::Construct::Response {
@@ -1701,6 +1746,18 @@ void Vst3Bridge::run() {
                 return UniversalTResult(Steinberg::kResultFalse);
             }
 
+            // ARA requires initializeARAWithConfiguration() before the first
+            // createDocumentControllerWithDocument() call. Call it once per factory.
+            if (ara_initialized_factories_.find(ara_factory) ==
+                ara_initialized_factories_.end()) {
+                ARA::ARAInterfaceConfiguration cfg{};
+                cfg.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
+                    ARAInterfaceConfiguration, assertFunctionAddress);
+                cfg.assertFunctionAddress = nullptr;
+                ara_factory->initializeARAWithConfiguration(&cfg);
+                ara_initialized_factories_.insert(ara_factory);
+            }
+
             auto dc_instance = std::make_unique<AraDocumentControllerInstance>(
                 nullptr, request.ara_dc_id, *this);
 
@@ -1716,11 +1773,12 @@ void Vst3Bridge::run() {
 
             // Insert into the map before calling createDocumentControllerWithDocument
             // so that any host callbacks fired during construction can resolve ara_dc_id.
-            AraDocumentControllerInstance* dc_ptr = dc_instance.get();
+            AraDocumentControllerInstance* dc_ptr;
             {
                 std::lock_guard lock(ara_document_controllers_mutex_);
-                ara_document_controllers_.insert_or_assign(
-                    request.ara_dc_id, std::move(dc_instance));
+                auto& slot = ara_document_controllers_[request.ara_dc_id];
+                slot = std::move(dc_instance);
+                dc_ptr = slot.get();
             }
 
             const ARA::ARADocumentControllerInstance* result = nullptr;
@@ -1794,53 +1852,51 @@ void Vst3Bridge::run() {
             return Ack{};
         },
         [&](const YaAra::BeginEditing& r) -> YaAra::BeginEditing::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it != ara_document_controllers_.end() && it->second->dc_instance)
-                it->second->dc_instance->documentControllerInterface
-                    ->beginEditing(it->second->dc_instance->documentControllerRef);
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (dc && dc->dc_instance)
+                dc->dc_instance->documentControllerInterface
+                    ->beginEditing(dc->dc_instance->documentControllerRef);
             return Ack{};
         },
         [&](const YaAra::EndEditing& r) -> YaAra::EndEditing::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it != ara_document_controllers_.end() && it->second->dc_instance)
-                it->second->dc_instance->documentControllerInterface
-                    ->endEditing(it->second->dc_instance->documentControllerRef);
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (dc && dc->dc_instance)
+                dc->dc_instance->documentControllerInterface
+                    ->endEditing(dc->dc_instance->documentControllerRef);
             return Ack{};
         },
         [&](const YaAra::NotifyModelUpdates& r)
             -> YaAra::NotifyModelUpdates::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it != ara_document_controllers_.end() && it->second->dc_instance)
-                it->second->dc_instance->documentControllerInterface
-                    ->notifyModelUpdates(it->second->dc_instance->documentControllerRef);
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (dc && dc->dc_instance)
+                dc->dc_instance->documentControllerInterface
+                    ->notifyModelUpdates(
+                        dc->dc_instance->documentControllerRef);
             return Ack{};
         },
         [&](const YaAra::UpdateDocumentProperties& r)
             -> YaAra::UpdateDocumentProperties::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it != ara_document_controllers_.end() && it->second->dc_instance) {
-                ARA::ARADocumentProperties props{};
-                props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
-                    ARADocumentProperties, name);
-                props.name = r.properties.name.empty()
-                                 ? nullptr
-                                 : r.properties.name.c_str();
-                it->second->dc_instance->documentControllerInterface
-                    ->updateDocumentProperties(it->second->dc_instance->documentControllerRef, &props);
-            }
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
+                return Ack{};
+            ARA::ARADocumentProperties props{};
+            props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
+                ARADocumentProperties, name);
+            props.name = r.properties.name.empty()
+                             ? nullptr
+                             : r.properties.name.c_str();
+            dc->dc_instance->documentControllerInterface
+                ->updateDocumentProperties(
+                    dc->dc_instance->documentControllerRef, &props);
             return Ack{};
         },
         [&](const YaAra::AddMusicalContext& r)
             -> YaAra::AddMusicalContext::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto host_ref =
                 reinterpret_cast<ARA::ARAMusicalContextHostRef>(r.host_ref);
             ARA::ARAMusicalContextProperties props{};
@@ -1857,18 +1913,18 @@ void Vst3Bridge::run() {
                          r.properties.color->b};
                 props.color = &color;
             }
-            auto* ref = dc_iface->createMusicalContext(dc, host_ref, &props);
+            auto* ref = dc_iface->createMusicalContext(dcr, host_ref, &props);
             if (!ref)
                 return UniversalTResult(Steinberg::kResultFalse);
             return reinterpret_cast<uint64_t>(ref);
         },
         [&](const YaAra::UpdateMusicalContextProperties& r)
             -> YaAra::UpdateMusicalContextProperties::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto* ref = reinterpret_cast<ARA::ARAMusicalContextRef>(
                 r.musical_context_ref);
             ARA::ARAMusicalContextProperties props{};
@@ -1885,17 +1941,16 @@ void Vst3Bridge::run() {
                          r.properties.color->b};
                 props.color = &color;
             }
-            dc_iface
-                ->updateMusicalContextProperties(dc, ref, &props);
+            dc_iface->updateMusicalContextProperties(dcr, ref, &props);
             return Ack{};
         },
         [&](const YaAra::UpdateMusicalContextContent& r)
             -> YaAra::UpdateMusicalContextContent::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto* ref = reinterpret_cast<ARA::ARAMusicalContextRef>(
                 r.musical_context_ref);
             ARA::ARAContentTimeRange range_s{};
@@ -1905,38 +1960,34 @@ void Vst3Bridge::run() {
                 range_ptr = &range_s;
             }
             dc_iface->updateMusicalContextContent(
-                dc, ref, range_ptr,
+                dcr, ref, range_ptr,
                 static_cast<ARA::ARAContentUpdateFlags>(r.flags));
             return Ack{};
         },
         [&](const YaAra::RemoveMusicalContext& r)
             -> YaAra::RemoveMusicalContext::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface->destroyMusicalContext(
-                dc,
+            dc->dc_instance->documentControllerInterface->destroyMusicalContext(
+                dc->dc_instance->documentControllerRef,
                 reinterpret_cast<ARA::ARAMusicalContextRef>(
                     r.musical_context_ref));
             return Ack{};
         },
         [&](const YaAra::AddRegionSequence& r)
             -> YaAra::AddRegionSequence::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto host_ref =
                 reinterpret_cast<ARA::ARARegionSequenceHostRef>(r.host_ref);
             ARA::ARARegionSequenceProperties props{};
             props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
                 ARARegionSequenceProperties, color);
-            props.name = r.properties.name
-                             ? r.properties.name->c_str()
-                             : nullptr;
+            props.name = r.properties.name ? r.properties.name->c_str() : nullptr;
             props.orderIndex = r.properties.order_index;
             props.musicalContextRef =
                 reinterpret_cast<ARA::ARAMusicalContextRef>(
@@ -1948,28 +1999,24 @@ void Vst3Bridge::run() {
                          r.properties.color->b};
                 props.color = &color;
             }
-            auto* ref =
-                dc_iface->createRegionSequence(
-                    dc, host_ref, &props);
+            auto* ref = dc_iface->createRegionSequence(dcr, host_ref, &props);
             if (!ref)
                 return UniversalTResult(Steinberg::kResultFalse);
             return reinterpret_cast<uint64_t>(ref);
         },
         [&](const YaAra::UpdateRegionSequenceProperties& r)
             -> YaAra::UpdateRegionSequenceProperties::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto* ref = reinterpret_cast<ARA::ARARegionSequenceRef>(
                 r.region_sequence_ref);
             ARA::ARARegionSequenceProperties props{};
             props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
                 ARARegionSequenceProperties, color);
-            props.name = r.properties.name
-                             ? r.properties.name->c_str()
-                             : nullptr;
+            props.name = r.properties.name ? r.properties.name->c_str() : nullptr;
             props.orderIndex = r.properties.order_index;
             props.musicalContextRef =
                 reinterpret_cast<ARA::ARAMusicalContextRef>(
@@ -1981,37 +2028,54 @@ void Vst3Bridge::run() {
                          r.properties.color->b};
                 props.color = &color;
             }
-            dc_iface->updateRegionSequenceProperties(
-                dc, ref, &props);
+            dc_iface->updateRegionSequenceProperties(dcr, ref, &props);
             return Ack{};
         },
         [&](const YaAra::RemoveRegionSequence& r)
             -> YaAra::RemoveRegionSequence::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface->destroyRegionSequence(
-                dc,
+            dc->dc_instance->documentControllerInterface->destroyRegionSequence(
+                dc->dc_instance->documentControllerRef,
                 reinterpret_cast<ARA::ARARegionSequenceRef>(
                     r.region_sequence_ref));
             return Ack{};
         },
         [&](const YaAra::AddAudioSource& r)
             -> YaAra::AddAudioSource::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto host_ref =
                 reinterpret_cast<ARA::ARAAudioSourceHostRef>(r.host_ref);
             const std::string name_s =
                 r.properties.name.value_or(std::string{});
             ARA::ARAAudioSourceProperties props{};
-            props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
-                ARAAudioSourceProperties, channelArrangement);
+            Steinberg::Vst::SpeakerArrangement speaker_arr_add{};
+            if (r.properties.channel_arrangement &&
+                r.properties.channel_arrangement->data_type ==
+                    static_cast<int32_t>(
+                        ARA::kARAChannelArrangementVST3SpeakerArrangement) &&
+                r.properties.channel_arrangement->data.size() >=
+                    sizeof(speaker_arr_add)) {
+                std::memcpy(&speaker_arr_add,
+                            r.properties.channel_arrangement->data.data(),
+                            sizeof(speaker_arr_add));
+                props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
+                    ARAAudioSourceProperties, channelArrangement);
+                props.channelArrangementDataType =
+                    ARA::kARAChannelArrangementVST3SpeakerArrangement;
+                props.channelArrangement = &speaker_arr_add;
+            } else {
+                props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
+                    ARAAudioSourceProperties, merits64BitSamples);
+                props.channelArrangementDataType =
+                    ARA::kARAChannelArrangementUndefined;
+                props.channelArrangement = nullptr;
+            }
             props.name = r.properties.name ? name_s.c_str() : nullptr;
             props.persistentID = r.properties.persistent_id.c_str();
             props.sampleCount = r.properties.sample_count;
@@ -2019,26 +2083,45 @@ void Vst3Bridge::run() {
             props.channelCount = r.properties.channel_count;
             props.merits64BitSamples =
                 static_cast<ARA::ARABool>(r.properties.merits_64bit_samples);
-            auto* ref = dc_iface->createAudioSource(
-                dc, host_ref, &props);
+            auto* ref = dc_iface->createAudioSource(dcr, host_ref, &props);
             if (!ref)
                 return UniversalTResult(Steinberg::kResultFalse);
             return reinterpret_cast<uint64_t>(ref);
         },
         [&](const YaAra::UpdateAudioSourceProperties& r)
             -> YaAra::UpdateAudioSourceProperties::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto* ref = reinterpret_cast<ARA::ARAAudioSourceRef>(
                 r.audio_source_ref);
             const std::string name_s =
                 r.properties.name.value_or(std::string{});
             ARA::ARAAudioSourceProperties props{};
-            props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
-                ARAAudioSourceProperties, channelArrangement);
+            Steinberg::Vst::SpeakerArrangement speaker_arr{};
+            if (r.properties.channel_arrangement &&
+                r.properties.channel_arrangement->data_type ==
+                    static_cast<int32_t>(
+                        ARA::kARAChannelArrangementVST3SpeakerArrangement) &&
+                r.properties.channel_arrangement->data.size() >=
+                    sizeof(speaker_arr)) {
+                std::memcpy(&speaker_arr,
+                            r.properties.channel_arrangement->data.data(),
+                            sizeof(speaker_arr));
+                props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
+                    ARAAudioSourceProperties, channelArrangement);
+                props.channelArrangementDataType =
+                    ARA::kARAChannelArrangementVST3SpeakerArrangement;
+                props.channelArrangement = &speaker_arr;
+            } else {
+                props.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
+                    ARAAudioSourceProperties, merits64BitSamples);
+                props.channelArrangementDataType =
+                    ARA::kARAChannelArrangementUndefined;
+                props.channelArrangement = nullptr;
+            }
             props.name = r.properties.name ? name_s.c_str() : nullptr;
             props.persistentID = r.properties.persistent_id.c_str();
             props.sampleCount = r.properties.sample_count;
@@ -2046,17 +2129,16 @@ void Vst3Bridge::run() {
             props.channelCount = r.properties.channel_count;
             props.merits64BitSamples =
                 static_cast<ARA::ARABool>(r.properties.merits_64bit_samples);
-            dc_iface->updateAudioSourceProperties(
-                dc, ref, &props);
+            dc_iface->updateAudioSourceProperties(dcr, ref, &props);
             return Ack{};
         },
         [&](const YaAra::UpdateAudioSourceContent& r)
             -> YaAra::UpdateAudioSourceContent::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto* ref = reinterpret_cast<ARA::ARAAudioSourceRef>(
                 r.audio_source_ref);
             ARA::ARAContentTimeRange range_s{};
@@ -2066,57 +2148,51 @@ void Vst3Bridge::run() {
                 range_ptr = &range_s;
             }
             dc_iface->updateAudioSourceContent(
-                dc, ref, range_ptr,
+                dcr, ref, range_ptr,
                 static_cast<ARA::ARAContentUpdateFlags>(r.flags));
             return Ack{};
         },
         [&](const YaAra::EnableAudioSourceSamplesAccess& r)
             -> YaAra::EnableAudioSourceSamplesAccess::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface->enableAudioSourceSamplesAccess(
-                dc,
-                reinterpret_cast<ARA::ARAAudioSourceRef>(r.audio_source_ref),
-                static_cast<ARA::ARABool>(r.enable));
+            dc->dc_instance->documentControllerInterface
+                ->enableAudioSourceSamplesAccess(
+                    dc->dc_instance->documentControllerRef,
+                    reinterpret_cast<ARA::ARAAudioSourceRef>(r.audio_source_ref),
+                    static_cast<ARA::ARABool>(r.enable));
             return Ack{};
         },
         [&](const YaAra::DeactivateAndUnregisterAudioSource& r)
             -> YaAra::DeactivateAndUnregisterAudioSource::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface
+            dc->dc_instance->documentControllerInterface
                 ->deactivateAudioSourceForUndoHistory(
-                    dc,
-                    reinterpret_cast<ARA::ARAAudioSourceRef>(
-                        r.audio_source_ref),
+                    dc->dc_instance->documentControllerRef,
+                    reinterpret_cast<ARA::ARAAudioSourceRef>(r.audio_source_ref),
                     static_cast<ARA::ARABool>(r.deactivate));
             return Ack{};
         },
         [&](const YaAra::RemoveAudioSource& r)
             -> YaAra::RemoveAudioSource::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface->destroyAudioSource(
-                dc,
+            dc->dc_instance->documentControllerInterface->destroyAudioSource(
+                dc->dc_instance->documentControllerRef,
                 reinterpret_cast<ARA::ARAAudioSourceRef>(r.audio_source_ref));
             return Ack{};
         },
         [&](const YaAra::AddAudioModification& r)
             -> YaAra::AddAudioModification::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             const std::string name_s =
                 r.properties.name.value_or(std::string{});
             ARA::ARAAudioModificationProperties props{};
@@ -2125,7 +2201,7 @@ void Vst3Bridge::run() {
             props.name = r.properties.name ? name_s.c_str() : nullptr;
             props.persistentID = r.properties.persistent_id.c_str();
             auto* ref = dc_iface->createAudioModification(
-                dc,
+                dcr,
                 reinterpret_cast<ARA::ARAAudioSourceRef>(r.audio_source_ref),
                 reinterpret_cast<ARA::ARAAudioModificationHostRef>(r.host_ref),
                 &props);
@@ -2135,11 +2211,11 @@ void Vst3Bridge::run() {
         },
         [&](const YaAra::CloneAudioModification& r)
             -> YaAra::CloneAudioModification::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             const std::string name_s =
                 r.properties.name.value_or(std::string{});
             ARA::ARAAudioModificationProperties props{};
@@ -2148,7 +2224,7 @@ void Vst3Bridge::run() {
             props.name = r.properties.name ? name_s.c_str() : nullptr;
             props.persistentID = r.properties.persistent_id.c_str();
             auto* ref = dc_iface->cloneAudioModification(
-                dc,
+                dcr,
                 reinterpret_cast<ARA::ARAAudioModificationRef>(
                     r.audio_modification_ref),
                 reinterpret_cast<ARA::ARAAudioModificationHostRef>(r.host_ref),
@@ -2159,11 +2235,11 @@ void Vst3Bridge::run() {
         },
         [&](const YaAra::UpdateAudioModificationProperties& r)
             -> YaAra::UpdateAudioModificationProperties::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             const std::string name_s =
                 r.properties.name.value_or(std::string{});
             ARA::ARAAudioModificationProperties props{};
@@ -2172,7 +2248,7 @@ void Vst3Bridge::run() {
             props.name = r.properties.name ? name_s.c_str() : nullptr;
             props.persistentID = r.properties.persistent_id.c_str();
             dc_iface->updateAudioModificationProperties(
-                dc,
+                dcr,
                 reinterpret_cast<ARA::ARAAudioModificationRef>(
                     r.audio_modification_ref),
                 &props);
@@ -2180,14 +2256,12 @@ void Vst3Bridge::run() {
         },
         [&](const YaAra::DeactivateAndUnregisterAudioModification& r)
             -> YaAra::DeactivateAndUnregisterAudioModification::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface
+            dc->dc_instance->documentControllerInterface
                 ->deactivateAudioModificationForUndoHistory(
-                    dc,
+                    dc->dc_instance->documentControllerRef,
                     reinterpret_cast<ARA::ARAAudioModificationRef>(
                         r.audio_modification_ref),
                     static_cast<ARA::ARABool>(r.deactivate));
@@ -2195,24 +2269,22 @@ void Vst3Bridge::run() {
         },
         [&](const YaAra::RemoveAudioModification& r)
             -> YaAra::RemoveAudioModification::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface->destroyAudioModification(
-                dc,
+            dc->dc_instance->documentControllerInterface->destroyAudioModification(
+                dc->dc_instance->documentControllerRef,
                 reinterpret_cast<ARA::ARAAudioModificationRef>(
                     r.audio_modification_ref));
             return Ack{};
         },
         [&](const YaAra::AddPlaybackRegion& r)
             -> YaAra::AddPlaybackRegion::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             const std::string name_s =
                 r.properties.name.value_or(std::string{});
             ARA::ARAPlaybackRegionProperties props{};
@@ -2243,7 +2315,7 @@ void Vst3Bridge::run() {
                 props.color = &color;
             }
             auto* ref = dc_iface->createPlaybackRegion(
-                dc,
+                dcr,
                 reinterpret_cast<ARA::ARAAudioModificationRef>(
                     r.audio_modification_ref),
                 reinterpret_cast<ARA::ARAPlaybackRegionHostRef>(r.host_ref),
@@ -2254,11 +2326,11 @@ void Vst3Bridge::run() {
         },
         [&](const YaAra::UpdatePlaybackRegionProperties& r)
             -> YaAra::UpdatePlaybackRegionProperties::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             const std::string name_s =
                 r.properties.name.value_or(std::string{});
             ARA::ARAPlaybackRegionProperties props{};
@@ -2289,7 +2361,7 @@ void Vst3Bridge::run() {
                 props.color = &color;
             }
             dc_iface->updatePlaybackRegionProperties(
-                dc,
+                dcr,
                 reinterpret_cast<ARA::ARAPlaybackRegionRef>(
                     r.playback_region_ref),
                 &props);
@@ -2297,61 +2369,54 @@ void Vst3Bridge::run() {
         },
         [&](const YaAra::RemovePlaybackRegion& r)
             -> YaAra::RemovePlaybackRegion::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            dc_iface->destroyPlaybackRegion(
-                dc,
+            dc->dc_instance->documentControllerInterface->destroyPlaybackRegion(
+                dc->dc_instance->documentControllerRef,
                 reinterpret_cast<ARA::ARAPlaybackRegionRef>(
                     r.playback_region_ref));
             return Ack{};
         },
         [&](const YaAra::RequestAudioSourceContentAnalysis& r)
             -> YaAra::RequestAudioSourceContentAnalysis::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return Ack{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             std::vector<ARA::ARAContentType> types;
             types.reserve(r.content_types.size());
             for (auto t : r.content_types)
                 types.push_back(static_cast<ARA::ARAContentType>(t));
-            dc_iface
-                ->requestAudioSourceContentAnalysis(
-                    dc,
-                    reinterpret_cast<ARA::ARAAudioSourceRef>(
-                        r.audio_source_ref),
-                    static_cast<ARA::ARASize>(types.size()),
-                    types.data());
+            dc_iface->requestAudioSourceContentAnalysis(
+                dcr,
+                reinterpret_cast<ARA::ARAAudioSourceRef>(r.audio_source_ref),
+                static_cast<ARA::ARASize>(types.size()),
+                types.data());
             return Ack{};
         },
         [&](const YaAra::GetPlaybackRegionHeadAndTailTime& r)
             -> YaAra::GetPlaybackRegionHeadAndTailTime::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return YaAra::GetPlaybackRegionHeadAndTailTime::Response{};
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
             ARA::ARATimeDuration head = 0.0, tail = 0.0;
-            dc_iface
+            dc->dc_instance->documentControllerInterface
                 ->getPlaybackRegionHeadAndTailTime(
-                    dc,
+                    dc->dc_instance->documentControllerRef,
                     reinterpret_cast<ARA::ARAPlaybackRegionRef>(
                         r.playback_region_ref),
                     &head, &tail);
-            return YaAra::GetPlaybackRegionHeadAndTailTime::Response{
-                .head_time = head, .tail_time = tail};
+            return {.head_time = head, .tail_time = tail};
         },
         [&](const YaAra::StoreObjectsToArchive& r)
             -> YaAra::StoreObjectsToArchive::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto writer_ref = reinterpret_cast<ARA::ARAArchiveWriterHostRef>(
                 r.archive_writer_host_ref);
             ARA::ARAStoreObjectsFilter filter_s{};
@@ -2381,18 +2446,16 @@ void Vst3Bridge::run() {
                     mod_refs.empty() ? nullptr : mod_refs.data();
                 filter_ptr = &filter_s;
             }
-            const ARA::ARABool result =
-                dc_iface->storeObjectsToArchive(
-                    dc, writer_ref, filter_ptr);
-            return static_cast<int32_t>(result);
+            return static_cast<int32_t>(
+                dc_iface->storeObjectsToArchive(dcr, writer_ref, filter_ptr));
         },
         [&](const YaAra::RestoreObjectsFromArchive& r)
             -> YaAra::RestoreObjectsFromArchive::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
+            auto* dc_iface = dc->dc_instance->documentControllerInterface;
+            auto dcr = dc->dc_instance->documentControllerRef;
             auto reader_ref = reinterpret_cast<ARA::ARAArchiveReaderHostRef>(
                 r.archive_reader_host_ref);
             ARA::ARARestoreObjectsFilter filter_s{};
@@ -2401,8 +2464,7 @@ void Vst3Bridge::run() {
                 mod_cur;
             if (r.filter) {
                 filter_s.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
-                    ARARestoreObjectsFilter,
-                    audioModificationCurrentIDs);
+                    ARARestoreObjectsFilter, audioModificationCurrentIDs);
                 filter_s.documentData =
                     static_cast<ARA::ARABool>(r.filter->document_data);
                 for (auto& s : r.filter->audio_source_archive_ids)
@@ -2430,54 +2492,198 @@ void Vst3Bridge::run() {
                     mod_cur.empty() ? nullptr : mod_cur.data();
                 filter_ptr = &filter_s;
             }
-            const ARA::ARABool result =
+            return static_cast<int32_t>(
                 dc_iface->restoreObjectsFromArchive(
-                    dc, reader_ref, filter_ptr);
-            return static_cast<int32_t>(result);
+                    dcr, reader_ref, filter_ptr));
         },
         [&](const YaAra::StoreDocumentToArchive& r)
             -> YaAra::StoreDocumentToArchive::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            const ARA::ARABool result =
-                dc_iface->storeDocumentToArchive(
-                    dc,
-                    reinterpret_cast<ARA::ARAArchiveWriterHostRef>(
-                        r.archive_writer_host_ref));
-            return static_cast<int32_t>(result);
+            return static_cast<int32_t>(
+                dc->dc_instance->documentControllerInterface
+                    ->storeDocumentToArchive(
+                        dc->dc_instance->documentControllerRef,
+                        reinterpret_cast<ARA::ARAArchiveWriterHostRef>(
+                            r.archive_writer_host_ref)));
         },
         [&](const YaAra::BeginRestoringDocumentFromArchive& r)
             -> YaAra::BeginRestoringDocumentFromArchive::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            const ARA::ARABool result =
-                dc_iface
+            return static_cast<int32_t>(
+                dc->dc_instance->documentControllerInterface
                     ->beginRestoringDocumentFromArchive(
-                        dc,
+                        dc->dc_instance->documentControllerRef,
                         reinterpret_cast<ARA::ARAArchiveReaderHostRef>(
-                            r.archive_reader_host_ref));
-            return static_cast<int32_t>(result);
+                            r.archive_reader_host_ref)));
         },
         [&](const YaAra::EndRestoringDocumentFromArchive& r)
             -> YaAra::EndRestoringDocumentFromArchive::Response {
-            std::lock_guard dc_lock(ara_document_controllers_mutex_);
-            auto it = ara_document_controllers_.find(r.ara_dc_id);
-            if (it == ara_document_controllers_.end() || !it->second->dc_instance)
+            auto* dc = resolve_dc(r.ara_dc_id);
+            if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
-            auto dc_inst = it->second->dc_instance; auto dc = dc_inst->documentControllerRef; auto* dc_iface = dc_inst->documentControllerInterface;
-            const ARA::ARABool result =
-                dc_iface
+            return static_cast<int32_t>(
+                dc->dc_instance->documentControllerInterface
                     ->endRestoringDocumentFromArchive(
-                        dc,
+                        dc->dc_instance->documentControllerRef,
                         reinterpret_cast<ARA::ARAArchiveReaderHostRef>(
-                            r.archive_reader_host_ref));
-            return static_cast<int32_t>(result);
+                            r.archive_reader_host_ref)));
+        },
+        [&](const YaAra::PluginExtension::PlaybackRendererAddRegion& r)
+            -> YaAra::PluginExtension::PlaybackRendererAddRegion::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->playbackRendererInterface &&
+                    ext->playbackRendererInterface->addPlaybackRegion) {
+                    ext->playbackRendererInterface->addPlaybackRegion(
+                        reinterpret_cast<ARA::ARAPlaybackRendererRef>(
+                            r.playback_renderer_ref),
+                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
+                            r.playback_region_ref));
+                }
+            }
+            return Ack{};
+        },
+        [&](const YaAra::PluginExtension::PlaybackRendererRemoveRegion& r)
+            -> YaAra::PluginExtension::PlaybackRendererRemoveRegion::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->playbackRendererInterface &&
+                    ext->playbackRendererInterface->removePlaybackRegion) {
+                    ext->playbackRendererInterface->removePlaybackRegion(
+                        reinterpret_cast<ARA::ARAPlaybackRendererRef>(
+                            r.playback_renderer_ref),
+                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
+                            r.playback_region_ref));
+                }
+            }
+            return Ack{};
+        },
+        [&](const YaAra::PluginExtension::EditorRendererAddRegion& r)
+            -> YaAra::PluginExtension::EditorRendererAddRegion::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->editorRendererInterface &&
+                    ext->editorRendererInterface->addPlaybackRegion) {
+                    ext->editorRendererInterface->addPlaybackRegion(
+                        reinterpret_cast<ARA::ARAEditorRendererRef>(
+                            r.editor_renderer_ref),
+                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
+                            r.playback_region_ref));
+                }
+            }
+            return Ack{};
+        },
+        [&](const YaAra::PluginExtension::EditorRendererRemoveRegion& r)
+            -> YaAra::PluginExtension::EditorRendererRemoveRegion::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->editorRendererInterface &&
+                    ext->editorRendererInterface->removePlaybackRegion) {
+                    ext->editorRendererInterface->removePlaybackRegion(
+                        reinterpret_cast<ARA::ARAEditorRendererRef>(
+                            r.editor_renderer_ref),
+                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
+                            r.playback_region_ref));
+                }
+            }
+            return Ack{};
+        },
+        [&](const YaAra::PluginExtension::EditorRendererAddRegionSequence& r)
+            -> YaAra::PluginExtension::EditorRendererAddRegionSequence::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->editorRendererInterface &&
+                    ext->editorRendererInterface->addRegionSequence) {
+                    ext->editorRendererInterface->addRegionSequence(
+                        reinterpret_cast<ARA::ARAEditorRendererRef>(
+                            r.editor_renderer_ref),
+                        reinterpret_cast<ARA::ARARegionSequenceRef>(
+                            r.region_sequence_ref));
+                }
+            }
+            return Ack{};
+        },
+        [&](const YaAra::PluginExtension::EditorRendererRemoveRegionSequence& r)
+            -> YaAra::PluginExtension::EditorRendererRemoveRegionSequence::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->editorRendererInterface &&
+                    ext->editorRendererInterface->removeRegionSequence) {
+                    ext->editorRendererInterface->removeRegionSequence(
+                        reinterpret_cast<ARA::ARAEditorRendererRef>(
+                            r.editor_renderer_ref),
+                        reinterpret_cast<ARA::ARARegionSequenceRef>(
+                            r.region_sequence_ref));
+                }
+            }
+            return Ack{};
+        },
+        [&](const YaAra::PluginExtension::EditorViewNotifySelection& r)
+            -> YaAra::PluginExtension::EditorViewNotifySelection::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->editorViewInterface &&
+                    ext->editorViewInterface->notifySelection) {
+                    std::vector<ARA::ARAPlaybackRegionRef> regions;
+                    regions.reserve(r.playback_region_refs.size());
+                    for (auto h : r.playback_region_refs)
+                        regions.push_back(
+                            reinterpret_cast<ARA::ARAPlaybackRegionRef>(h));
+                    std::vector<ARA::ARARegionSequenceRef> seqs;
+                    seqs.reserve(r.region_sequence_refs.size());
+                    for (auto h : r.region_sequence_refs)
+                        seqs.push_back(
+                            reinterpret_cast<ARA::ARARegionSequenceRef>(h));
+                    ARA::ARAContentTimeRange time_range_s{};
+                    ARA::ARAViewSelection sel{};
+                    sel.structSize = ARA_IMPLEMENTED_STRUCT_SIZE(
+                        ARAViewSelection, timeRange);
+                    sel.playbackRegionRefsCount =
+                        static_cast<ARA::ARASize>(regions.size());
+                    sel.playbackRegionRefs =
+                        regions.empty() ? nullptr : regions.data();
+                    sel.regionSequenceRefsCount =
+                        static_cast<ARA::ARASize>(seqs.size());
+                    sel.regionSequenceRefs =
+                        seqs.empty() ? nullptr : seqs.data();
+                    if (r.time_range) {
+                        time_range_s = {r.time_range->start,
+                                        r.time_range->duration};
+                        sel.timeRange = &time_range_s;
+                    } else {
+                        sel.timeRange = nullptr;
+                    }
+                    ext->editorViewInterface->notifySelection(
+                        reinterpret_cast<ARA::ARAEditorViewRef>(
+                            r.editor_view_ref),
+                        &sel);
+                }
+            }
+            return Ack{};
+        },
+        [&](const YaAra::PluginExtension::EditorViewNotifyHideRegionSequences& r)
+            -> YaAra::PluginExtension::EditorViewNotifyHideRegionSequences::Response {
+            const auto& [instance, _] = get_instance(r.instance_id);
+            if (const auto* ext = instance.ara_extension_instance) {
+                if (ext->editorViewInterface &&
+                    ext->editorViewInterface->notifyHideRegionSequences) {
+                    std::vector<ARA::ARARegionSequenceRef> seqs;
+                    seqs.reserve(r.region_sequence_refs.size());
+                    for (auto h : r.region_sequence_refs)
+                        seqs.push_back(
+                            reinterpret_cast<ARA::ARARegionSequenceRef>(h));
+                    ext->editorViewInterface->notifyHideRegionSequences(
+                        reinterpret_cast<ARA::ARAEditorViewRef>(
+                            r.editor_view_ref),
+                        static_cast<ARA::ARASize>(seqs.size()),
+                        seqs.empty() ? nullptr : seqs.data());
+                }
+            }
+            return Ack{};
         },
 #endif  // WITH_ARA
         });
