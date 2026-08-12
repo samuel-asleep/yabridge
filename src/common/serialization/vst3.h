@@ -331,8 +331,6 @@ using Vst3CallbackRequest =
                  YaUnitHandler2::NotifyUnitByBusChange
 #ifdef WITH_ARA
                  ,
-                 YaAra::HostCallback::CreateAudioReader,
-                 YaAra::HostCallback::DestroyAudioReader,
                  YaAra::HostCallback::GetArchiveSize,
                  YaAra::HostCallback::ReadBytesFromArchive,
                  YaAra::HostCallback::WriteBytesToArchive,

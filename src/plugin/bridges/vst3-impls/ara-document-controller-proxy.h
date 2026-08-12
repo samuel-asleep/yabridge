@@ -75,20 +75,23 @@ class AraDocumentControllerProxy {
     // own analysis results; we need the type to deserialize event data).
     std::unordered_map<uint64_t, ARA::ARAContentType>
         content_reader_type_map_;
-    // Last event data returned by get_content_reader_data_for_event; kept
-    // alive until the next call so the caller's pointer stays valid.
-    std::vector<uint8_t> last_event_data_cache_;
-    // Decoded event struct — one per content type — kept alive across calls.
-    union DecodedEvent {
-        ARA::ARAContentNote          note;
-        ARA::ARAContentTempoEntry    tempo;
-        ARA::ARAContentBarSignature  bar;
-        ARA::ARAContentTuning        tuning;
-        ARA::ARAContentKeySignature  key;
-        ARA::ARAContentChord         chord;
-        DecodedEvent() noexcept { std::memset(this, 0, sizeof(*this)); }
-    } decoded_event_;
-    std::string decoded_chord_name_;
+
+    // Per-reader event data cache, keyed by content reader handle.
+    // Protected by host_refs_mutex_.
+    struct ReaderEventCache {
+        std::vector<uint8_t> last_event_data;
+        union DecodedEvent {
+            ARA::ARAContentNote          note;
+            ARA::ARAContentTempoEntry    tempo;
+            ARA::ARAContentBarSignature  bar;
+            ARA::ARAContentTuning        tuning;
+            ARA::ARAContentKeySignature  key;
+            ARA::ARAContentChord         chord;
+            DecodedEvent() noexcept { std::memset(this, 0, sizeof(*this)); }
+        } decoded_event;
+        std::string decoded_chord_name;
+    };
+    std::unordered_map<uint64_t, ReaderEventCache> content_reader_caches_;
 
     // Audio reader host refs created by the host.
     std::unordered_map<uint64_t, ARA::ARAAudioReaderHostRef>
@@ -99,7 +102,10 @@ class AraDocumentControllerProxy {
     // Protected by audio_reader_shm_mutex_ (separate from host_refs_mutex_
     // to allow concurrent ReadAudioSamples and Create/Destroy calls).
     std::mutex audio_reader_shm_mutex_;
-    std::unordered_map<uint64_t, AudioShmBuffer> audio_reader_shm_buffers_;
+    std::unordered_map<uint64_t, std::shared_ptr<AudioShmBuffer>> audio_reader_shm_buffers_;
+    // Max samples per channel for each reader, keyed by reader ID.
+    // Protected by audio_reader_shm_mutex_.
+    std::unordered_map<uint64_t, uint32_t> audio_reader_max_samples_;
 
     // The DAW's host callback interfaces, valid for the lifetime of this DC.
     const ARA::ARADocumentControllerHostInstance* host_instance_ = nullptr;

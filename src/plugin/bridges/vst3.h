@@ -218,6 +218,13 @@ class Vst3PluginBridge : PluginBridge<Vst3Sockets<std::jthread>> {
      * Remove and destroy the document controller proxy for the given DC ID.
      */
     void unregister_ara_document_controller(native_size_t ara_dc_id);
+
+    /**
+     * Find the registered AraDocumentControllerProxy whose address matches
+     * the given ARADocumentControllerRef. Returns nullptr if not found.
+     */
+    std::shared_ptr<AraDocumentControllerProxy>
+    find_ara_document_controller(ARA::ARADocumentControllerRef ref) noexcept;
 #endif
 
    private:

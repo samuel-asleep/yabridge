@@ -1952,7 +1952,7 @@ bool Vst3Logger::log_request(
 bool Vst3Logger::log_request(bool is_host_plugin,
                              const YaMainFactory::Construct& request) {
     return log_request_base(is_host_plugin, [&](auto& message) {
-        message << "IMainFactory::getFactory(cid = "
+        message << "IMainFactory::Construct(cid = "
                 << format_uid(Steinberg::FUID::fromTUID(
                        request.cid.native_uid().data()))
                 << ")";
@@ -2427,49 +2427,33 @@ void Vst3Logger::log_response(
                                  << text << " }"; });                          \
     }
 
-ARA_CB_LOG_REQUEST_ALL_EVENTS(GetArchiveSize, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(ReadBytesFromArchive, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(WriteBytesToArchive, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyDocumentArchivingProgress, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyDocumentUnarchivingProgress, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(GetDocumentArchiveID, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(IsMusicalContextContentAvailable, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(GetMusicalContextContentGrade, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(CreateMusicalContextContentReader, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(IsAudioSourceContentAvailable, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(GetAudioSourceContentGrade, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(CreateAudioSourceContentReader, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(GetContentReaderEventCount, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(GetContentReaderDataForEvent, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(DestroyContentReader, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyAudioSourceAnalysisProgress, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyAudioSourceContentChanged, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyAudioModificationContentChanged, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyPlaybackRegionContentChanged, "")
+ARA_CB_LOG_REQUEST_ALL_EVENTS(GetArchiveSize, ", archive_reader_host_ref=" << r.archive_reader_host_ref)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(ReadBytesFromArchive, ", archive_reader_host_ref=" << r.archive_reader_host_ref << ", position=" << r.position << ", length=" << r.length)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(WriteBytesToArchive, ", archive_writer_host_ref=" << r.archive_writer_host_ref << ", position=" << r.position << ", size=" << r.data.size())
+ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyDocumentArchivingProgress, ", value=" << r.value)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyDocumentUnarchivingProgress, ", value=" << r.value)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(GetDocumentArchiveID, ", archive_reader_host_ref=" << r.archive_reader_host_ref)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(IsMusicalContextContentAvailable, ", musical_context_host_ref=" << r.musical_context_host_ref << ", content_type=" << r.content_type)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(GetMusicalContextContentGrade, ", musical_context_host_ref=" << r.musical_context_host_ref << ", content_type=" << r.content_type)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(CreateMusicalContextContentReader, ", musical_context_host_ref=" << r.musical_context_host_ref << ", content_type=" << r.content_type)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(IsAudioSourceContentAvailable, ", audio_source_host_ref=" << r.audio_source_host_ref << ", content_type=" << r.content_type)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(GetAudioSourceContentGrade, ", audio_source_host_ref=" << r.audio_source_host_ref << ", content_type=" << r.content_type)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(CreateAudioSourceContentReader, ", audio_source_host_ref=" << r.audio_source_host_ref << ", content_type=" << r.content_type)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(GetContentReaderEventCount, ", content_reader_host_ref=" << r.content_reader_host_ref)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(GetContentReaderDataForEvent, ", content_reader_host_ref=" << r.content_reader_host_ref << ", event_index=" << r.event_index << ", content_type=" << r.content_type)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(DestroyContentReader, ", content_reader_host_ref=" << r.content_reader_host_ref)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyAudioSourceAnalysisProgress, ", audio_source_host_ref=" << r.audio_source_host_ref << ", state=" << r.state << ", value=" << r.value)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyAudioSourceContentChanged, ", audio_source_host_ref=" << r.audio_source_host_ref)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyAudioModificationContentChanged, ", audio_modification_host_ref=" << r.audio_modification_host_ref)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyPlaybackRegionContentChanged, ", playback_region_host_ref=" << r.playback_region_host_ref)
 ARA_CB_LOG_REQUEST_ALL_EVENTS(NotifyDocumentDataChanged, "")
 ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestStartPlayback, "")
 ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestStopPlayback, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestSetPlaybackPosition, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestSetCycleRange, "")
-ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestEnableCycle, "")
+ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestSetPlaybackPosition, ", time_position=" << r.time_position)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestSetCycleRange, ", start_time=" << r.start_time << ", duration=" << r.duration)
+ARA_CB_LOG_REQUEST_ALL_EVENTS(RequestEnableCycle, ", enable=" << r.enable)
 
 #undef ARA_CB_LOG_REQUEST_ALL_EVENTS
-
-// CreateAudioReader and DestroyAudioReader are high-frequency; suppress.
-bool Vst3Logger::log_request(bool /*is_host_plugin*/,
-                              const YaAra::HostCallback::CreateAudioReader&) {
-    return false;
-}
-bool Vst3Logger::log_request(bool /*is_host_plugin*/,
-                              const YaAra::HostCallback::DestroyAudioReader&) {
-    return false;
-}
-
-void Vst3Logger::log_response(bool is_host_plugin,
-                               const YaAra::HostCallback::CreateAudioReader::Response& v) {
-    log_response_base(is_host_plugin,
-                      [&](auto& msg) { msg << v.value; });
-}
 
 void Vst3Logger::log_response(bool is_host_plugin,
                                const YaAra::HostCallback::HandleResponse& v) {

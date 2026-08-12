@@ -291,6 +291,7 @@ struct Vst3PluginInstance {
     // The last notifySelection call received for this instance. Replayed after
     // attached() so Melodyne's view gets the selection state after its window
     // exists.
+    std::mutex last_ara_selection_mutex;
     std::optional<YaAra::PluginExtension::EditorViewNotifySelection>
         last_ara_selection;
 #endif

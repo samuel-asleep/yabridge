@@ -59,8 +59,8 @@ YaAraRegionSequenceProperties to_ya(
     return out;
 }
 
-YaArAAudioSourceProperties to_ya(const ARA::ARAAudioSourceProperties* p) {
-    YaArAAudioSourceProperties out{};
+YaAraAudioSourceProperties to_ya(const ARA::ARAAudioSourceProperties* p) {
+    YaAraAudioSourceProperties out{};
     if (!p)
         return out;
     if (p->name)
@@ -89,6 +89,7 @@ YaArAAudioSourceProperties to_ya(const ARA::ARAAudioSourceProperties* p) {
         // for VST3 (kARAChannelArrangementVST3SpeakerArrangement) it is 8 bytes
         constexpr size_t vst3_arr_size =
             sizeof(Steinberg::Vst::SpeakerArrangement);
+        // VST3 SpeakerArrangement is uint64_t (8 bytes) per specification
         arr.data.assign(bytes, bytes + vst3_arr_size);
         out.channel_arrangement = std::move(arr);
     }
@@ -96,9 +97,9 @@ YaArAAudioSourceProperties to_ya(const ARA::ARAAudioSourceProperties* p) {
 }
 
 
-YaArAAudioModificationProperties to_ya(
+YaAraAudioModificationProperties to_ya(
     const ARA::ARAAudioModificationProperties* p) {
-    YaArAAudioModificationProperties out{};
+    YaAraAudioModificationProperties out{};
     if (!p)
         return out;
     if (p->name)
@@ -396,20 +397,19 @@ ARA::ARAAudioSourceRef ARA_CALL AraDocumentControllerProxy::create_audio_source(
     const ARA::ARAAudioSourceProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_audio_source_handle_.fetch_add(1);
-    {
-        std::lock_guard lock(p->host_refs_mutex_);
-        p->audio_source_host_refs_[handle] = hostRef;
-        p->audio_source_channel_counts_[handle] =
-            properties ? properties->channelCount : 0;
-    }
+    const int32_t channel_count = properties ? properties->channelCount : 0;
     auto result = p->bridge_.send_message(YaAra::AddAudioSource{
         p->ara_dc_id_, handle, to_ya(properties)});
     return std::visit(
-        [](auto&& v) -> ARA::ARAAudioSourceRef {
-            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>)
+        [&](auto&& v) -> ARA::ARAAudioSourceRef {
+            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>) {
+                std::lock_guard lock(p->host_refs_mutex_);
+                p->audio_source_host_refs_[handle] = hostRef;
+                p->audio_source_channel_counts_[handle] = channel_count;
                 return reinterpret_cast<ARA::ARAAudioSourceRef>(v);
-            else
+            } else {
                 return nullptr;
+            }
         },
         result);
 }
@@ -483,21 +483,20 @@ AraDocumentControllerProxy::create_audio_modification(
     const ARA::ARAAudioModificationProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_audio_modification_handle_.fetch_add(1);
-    {
-        std::lock_guard lock(p->host_refs_mutex_);
-        p->audio_modification_host_refs_[handle] = hostRef;
-    }
     auto result = p->bridge_.send_message(YaAra::AddAudioModification{
         p->ara_dc_id_,
         reinterpret_cast<uint64_t>(audioSourceRef),
         handle,
         to_ya(properties)});
     return std::visit(
-        [](auto&& v) -> ARA::ARAAudioModificationRef {
-            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>)
+        [&](auto&& v) -> ARA::ARAAudioModificationRef {
+            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>) {
+                std::lock_guard lock(p->host_refs_mutex_);
+                p->audio_modification_host_refs_[handle] = hostRef;
                 return reinterpret_cast<ARA::ARAAudioModificationRef>(v);
-            else
+            } else {
                 return nullptr;
+            }
         },
         result);
 }
@@ -510,21 +509,20 @@ AraDocumentControllerProxy::clone_audio_modification(
     const ARA::ARAAudioModificationProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_audio_modification_handle_.fetch_add(1);
-    {
-        std::lock_guard lock(p->host_refs_mutex_);
-        p->audio_modification_host_refs_[handle] = hostRef;
-    }
     auto result = p->bridge_.send_message(YaAra::CloneAudioModification{
         p->ara_dc_id_,
         reinterpret_cast<uint64_t>(audioModificationRef),
         handle,
         to_ya(properties)});
     return std::visit(
-        [](auto&& v) -> ARA::ARAAudioModificationRef {
-            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>)
+        [&](auto&& v) -> ARA::ARAAudioModificationRef {
+            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>) {
+                std::lock_guard lock(p->host_refs_mutex_);
+                p->audio_modification_host_refs_[handle] = hostRef;
                 return reinterpret_cast<ARA::ARAAudioModificationRef>(v);
-            else
+            } else {
                 return nullptr;
+            }
         },
         result);
 }
@@ -574,21 +572,20 @@ AraDocumentControllerProxy::create_playback_region(
     const ARA::ARAPlaybackRegionProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_playback_region_handle_.fetch_add(1);
-    {
-        std::lock_guard lock(p->host_refs_mutex_);
-        p->playback_region_host_refs_[handle] = hostRef;
-    }
     auto result = p->bridge_.send_message(YaAra::AddPlaybackRegion{
         p->ara_dc_id_,
         reinterpret_cast<uint64_t>(audioModificationRef),
         handle,
         to_ya(properties)});
     return std::visit(
-        [](auto&& v) -> ARA::ARAPlaybackRegionRef {
-            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>)
+        [&](auto&& v) -> ARA::ARAPlaybackRegionRef {
+            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>) {
+                std::lock_guard lock(p->host_refs_mutex_);
+                p->playback_region_host_refs_[handle] = hostRef;
                 return reinterpret_cast<ARA::ARAPlaybackRegionRef>(v);
-            else
+            } else {
                 return nullptr;
+            }
         },
         result);
 }
@@ -624,18 +621,17 @@ AraDocumentControllerProxy::create_region_sequence(
     const ARA::ARARegionSequenceProperties* properties) {
     auto* p = self(r);
     uint64_t handle = p->next_region_sequence_handle_.fetch_add(1);
-    {
-        std::lock_guard lock(p->host_refs_mutex_);
-        p->region_sequence_host_refs_[handle] = hostRef;
-    }
     auto result = p->bridge_.send_message(YaAra::AddRegionSequence{
         p->ara_dc_id_, handle, to_ya(properties)});
     return std::visit(
-        [](auto&& v) -> ARA::ARARegionSequenceRef {
-            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>)
+        [&](auto&& v) -> ARA::ARARegionSequenceRef {
+            if constexpr (std::is_same_v<std::decay_t<decltype(v)>, uint64_t>) {
+                std::lock_guard lock(p->host_refs_mutex_);
+                p->region_sequence_host_refs_[handle] = hostRef;
                 return reinterpret_cast<ARA::ARARegionSequenceRef>(v);
-            else
+            } else {
                 return nullptr;
+            }
         },
         result);
 }
@@ -816,11 +812,11 @@ AraDocumentControllerProxy::get_content_reader_data_for_event(
     ARA::ARAContentReaderRef contentReaderRef,
     ARA::ARAInt32 eventIndex) {
     auto* p = self(r);
+    const uint64_t handle = reinterpret_cast<uint64_t>(contentReaderRef);
     ARA::ARAContentType content_type = ARA::kARAContentTypeNotes;
     {
         std::lock_guard lock(p->host_refs_mutex_);
-        auto it = p->content_reader_type_map_.find(
-            reinterpret_cast<uint64_t>(contentReaderRef));
+        auto it = p->content_reader_type_map_.find(handle);
         if (it != p->content_reader_type_map_.end())
             content_type = it->second;
     }
@@ -828,74 +824,73 @@ AraDocumentControllerProxy::get_content_reader_data_for_event(
         p->bridge_.send_mutually_recursive_message(
             YaAra::GetContentReaderDataForEventDC{
                 p->ara_dc_id_,
-                reinterpret_cast<uint64_t>(contentReaderRef),
+                handle,
                 static_cast<int32_t>(eventIndex),
                 static_cast<int32_t>(content_type)});
     if (response.data.empty())
         return nullptr;
 
     std::lock_guard lock(p->host_refs_mutex_);
-    p->last_event_data_cache_ = response.data;
-    const auto& bytes = p->last_event_data_cache_;
+    auto& cache = p->content_reader_caches_[handle];
+    cache.last_event_data = response.data;
+    const auto& bytes = cache.last_event_data;
 
-    // Decode bytes back into the typed struct.
     switch (content_type) {
         case ARA::kARAContentTypeNotes:
             if (bytes.size() >= sizeof(ARA::ARAContentNote)) {
-                p->decoded_event_.note = {};
-                std::memcpy(&p->decoded_event_.note, bytes.data(),
+                cache.decoded_event.note = {};
+                std::memcpy(&cache.decoded_event.note, bytes.data(),
                             sizeof(ARA::ARAContentNote));
-                return &p->decoded_event_.note;
+                return &cache.decoded_event.note;
             }
             break;
         case ARA::kARAContentTypeTempoEntries:
             if (bytes.size() >= sizeof(ARA::ARAContentTempoEntry)) {
-                p->decoded_event_.tempo = {};
-                std::memcpy(&p->decoded_event_.tempo, bytes.data(),
+                cache.decoded_event.tempo = {};
+                std::memcpy(&cache.decoded_event.tempo, bytes.data(),
                             sizeof(ARA::ARAContentTempoEntry));
-                return &p->decoded_event_.tempo;
+                return &cache.decoded_event.tempo;
             }
             break;
         case ARA::kARAContentTypeBarSignatures:
             if (bytes.size() >= sizeof(ARA::ARAContentBarSignature)) {
-                p->decoded_event_.bar = {};
-                std::memcpy(&p->decoded_event_.bar, bytes.data(),
+                cache.decoded_event.bar = {};
+                std::memcpy(&cache.decoded_event.bar, bytes.data(),
                             sizeof(ARA::ARAContentBarSignature));
-                return &p->decoded_event_.bar;
+                return &cache.decoded_event.bar;
             }
             break;
         case ARA::kARAContentTypeStaticTuning:
             if (bytes.size() >= sizeof(ARA::ARAContentTuning)) {
-                p->decoded_event_.tuning = {};
-                std::memcpy(&p->decoded_event_.tuning, bytes.data(),
+                cache.decoded_event.tuning = {};
+                std::memcpy(&cache.decoded_event.tuning, bytes.data(),
                             sizeof(ARA::ARAContentTuning));
-                return &p->decoded_event_.tuning;
+                return &cache.decoded_event.tuning;
             }
             break;
         case ARA::kARAContentTypeKeySignatures:
             if (bytes.size() >= sizeof(ARA::ARAContentKeySignature)) {
-                p->decoded_event_.key = {};
-                std::memcpy(&p->decoded_event_.key, bytes.data(),
+                cache.decoded_event.key = {};
+                std::memcpy(&cache.decoded_event.key, bytes.data(),
                             sizeof(ARA::ARAContentKeySignature));
-                return &p->decoded_event_.key;
+                return &cache.decoded_event.key;
             }
             break;
         case ARA::kARAContentTypeSheetChords:
             if (bytes.size() >= sizeof(ARA::ARAContentChord)) {
-                p->decoded_event_.chord = {};
-                std::memcpy(&p->decoded_event_.chord, bytes.data(),
+                cache.decoded_event.chord = {};
+                std::memcpy(&cache.decoded_event.chord, bytes.data(),
                             sizeof(ARA::ARAContentChord));
-                // The name string follows the struct in the byte buffer.
                 if (bytes.size() > sizeof(ARA::ARAContentChord)) {
-                    p->decoded_chord_name_.assign(
+                    cache.decoded_chord_name.assign(
                         reinterpret_cast<const char*>(
                             bytes.data() + sizeof(ARA::ARAContentChord)));
-                    p->decoded_event_.chord.name =
-                        p->decoded_chord_name_.c_str();
+                    cache.decoded_event.chord.name =
+                        cache.decoded_chord_name.c_str();
                 } else {
-                    p->decoded_event_.chord.name = nullptr;
+                    cache.decoded_event.chord.name = nullptr;
                 }
-                return &p->decoded_event_.chord;
+                return &cache.decoded_event.chord;
             }
             break;
         default:
@@ -908,14 +903,15 @@ void ARA_CALL AraDocumentControllerProxy::destroy_content_reader(
     ARA::ARADocumentControllerRef r,
     ARA::ARAContentReaderRef contentReaderRef) {
     auto* p = self(r);
+    const uint64_t handle = reinterpret_cast<uint64_t>(contentReaderRef);
     {
         std::lock_guard lock(p->host_refs_mutex_);
-        p->content_reader_type_map_.erase(
-            reinterpret_cast<uint64_t>(contentReaderRef));
+        p->content_reader_type_map_.erase(handle);
+        p->content_reader_caches_.erase(handle);
     }
     p->bridge_.send_message(YaAra::DestroyContentReaderDC{
         p->ara_dc_id_,
-        reinterpret_cast<uint64_t>(contentReaderRef)});
+        handle});
 }
 
 

@@ -214,6 +214,7 @@ private:
     // any thread concurrently with create/destroy.
     std::mutex audio_reader_map_mutex_;
     std::unordered_map<uint64_t, int32_t> audio_reader_channel_count_map_;
+    std::unordered_map<uint64_t, uint32_t> audio_reader_frame_capacity_map_;
 
     // Per-reader shared memory buffers created by YaAra::CreateAudioReader.
     // Keyed on reader_id, same mutex as above.

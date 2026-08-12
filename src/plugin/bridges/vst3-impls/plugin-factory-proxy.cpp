@@ -16,6 +16,9 @@
 
 #include "plugin-factory-proxy.h"
 
+#include <algorithm>
+#include <cstring>
+
 #include <pluginterfaces/vst/ivstcomponent.h>
 
 #ifdef WITH_ARA
@@ -46,9 +49,7 @@ tresult PLUGIN_API
 Vst3PluginFactoryProxyImpl::createInstance(Steinberg::FIDString cid,
                                            Steinberg::FIDString _iid,
                                            void** obj) {
-    // Class IDs may be padded with null bytes
-    constexpr size_t uid_size = sizeof(Steinberg::TUID);
-    if (!cid || !_iid || !obj || strnlen(_iid, uid_size) < uid_size) {
+    if (!cid || !_iid || !obj) {
         return Steinberg::kInvalidArgument;
     }
 

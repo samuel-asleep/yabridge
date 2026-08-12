@@ -82,12 +82,29 @@ struct YaAraFactory {
     // bridge. Call unregister_factory() when the owning object is destroyed.
     //
     // When create_dc is null, a stub returning nullptr is installed instead.
+
+    // Registry entry: create_dc callback + assigned trampoline slot index.
+    struct RegistryEntry {
+        AraCreateDcFn create_dc;
+        int slot = -1;
+        RegistryEntry() = default;
+        explicit RegistryEntry(AraCreateDcFn dc) : create_dc(std::move(dc)) {}
+        RegistryEntry(RegistryEntry&&) = delete;
+        RegistryEntry& operator=(RegistryEntry&&) = delete;
+        RegistryEntry(const RegistryEntry&) = delete;
+        RegistryEntry& operator=(const RegistryEntry&) = delete;
+    };
+
     ARA::ARAFactory to_ara_factory(AraCreateDcFn create_dc = nullptr) const;
 
     // Remove the factory from the global registry. Must be called when the
     // owning object is destroyed, if to_ara_factory was called with a non-null
     // create_dc.
     void unregister_factory() const noexcept;
+
+    // Accessible from the file-scope slot trampolines in ara-factory.cpp.
+    static std::unordered_map<const char*, RegistryEntry>& registry();
+    static std::mutex& registry_mutex();
 
    private:
     static void ARA_CALL stub_initialize(
@@ -100,35 +117,6 @@ struct YaAraFactory {
         const ARA::ARADocumentProperties*) {
         return nullptr;
     }
-
-    // Shared trampoline for all factories registered with create_dc. Looks up
-    // the calling factory by matching the registered ARAFactory address stored
-    // at call time via the global registry keyed by factory pointer.
-    //
-    // Since the ARA C API does not pass the factory pointer into this callback,
-    // the registry is keyed by the factory's unique factoryID string pointer
-    // (which is stable for the lifetime of the YaAraFactory that owns the
-    // string). The registry is populated with the exact const char* address of
-    // factoryID.c_str() so each factory gets a unique key.
-    static const ARA::ARADocumentControllerInstance* ARA_CALL
-    ipc_create_document_controller(
-        const ARA::ARADocumentControllerHostInstance* hostInstance,
-        const ARA::ARADocumentProperties* properties);
-
-    // Global registry: key = factoryID.c_str() address of the owning
-    // YaAraFactory, value = {create_dc callback, next_dc_id counter}.
-    struct RegistryEntry {
-        AraCreateDcFn create_dc;
-        std::atomic<native_size_t> next_dc_id{1};
-        RegistryEntry() = default;
-        explicit RegistryEntry(AraCreateDcFn dc) : create_dc(std::move(dc)) {}
-        RegistryEntry(RegistryEntry&&) = delete;
-        RegistryEntry& operator=(RegistryEntry&&) = delete;
-        RegistryEntry(const RegistryEntry&) = delete;
-        RegistryEntry& operator=(const RegistryEntry&) = delete;
-    };
-    static std::unordered_map<const char*, RegistryEntry>& registry();
-    static std::mutex& registry_mutex();
 
     void fill_factory_fields(ARA::ARAFactory& factory) const;
 

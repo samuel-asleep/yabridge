@@ -302,10 +302,6 @@ class Vst3Logger {
 
     // ARA host callback request types (plugin -> host)
     bool log_request(bool is_host_plugin,
-                     const YaAra::HostCallback::CreateAudioReader&);
-    bool log_request(bool is_host_plugin,
-                     const YaAra::HostCallback::DestroyAudioReader&);
-    bool log_request(bool is_host_plugin,
                      const YaAra::HostCallback::GetArchiveSize&);
     bool log_request(bool is_host_plugin,
                      const YaAra::HostCallback::ReadBytesFromArchive&);
@@ -357,8 +353,6 @@ class Vst3Logger {
                      const YaAra::HostCallback::RequestEnableCycle&);
 
     // ARA host callback response types
-    void log_response(bool is_host_plugin,
-                      const YaAra::HostCallback::CreateAudioReader::Response&);
     void log_response(bool is_host_plugin,
                       const YaAra::HostCallback::HandleResponse&);
     void log_response(bool is_host_plugin,

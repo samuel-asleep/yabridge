@@ -37,58 +37,69 @@ std::mutex& YaAraFactory::registry_mutex() {
 }
 
 // ---------------------------------------------------------------------------
-// IPC trampoline
-//
-// The ARA C API does not pass the ARAFactory pointer into this callback.
-// We key the registry on factoryID.c_str() — the address of the string
-// storage inside the owning YaAraFactory.  That address is unique per
-// YaAraFactory instance and stable for its lifetime.
-//
-// We find the right entry by scanning the registered factories whose
-// create_dc callback is set.  Because the number of concurrently registered
-// factories is tiny (one per ARA-capable plugin binary loaded into the
-// process), a linear scan is fine.
+// Process-wide DC ID counter and per-factory trampoline pool
 // ---------------------------------------------------------------------------
 
-const ARA::ARADocumentControllerInstance* ARA_CALL
-YaAraFactory::ipc_create_document_controller(
-    const ARA::ARADocumentControllerHostInstance* hostInstance,
-    const ARA::ARADocumentProperties* properties) {
+static std::atomic<native_size_t> g_next_dc_id{1};
+
+static bool g_slot_used[8] = {};
+
+// Each trampoline looks up registry entry by slot index.
+// Defined as a template to generate 8 distinct function addresses.
+template <int N>
+static const ARA::ARADocumentControllerInstance* ARA_CALL
+slot_trampoline(const ARA::ARADocumentControllerHostInstance* hostInstance,
+                const ARA::ARADocumentProperties* properties) {
     AraCreateDcFn callback;
-    native_size_t dc_id;
+    const native_size_t dc_id =
+        g_next_dc_id.fetch_add(1, std::memory_order_relaxed);
     {
-        std::lock_guard lock(registry_mutex());
-        auto& reg = registry();
-        AraCreateDcFn* found = nullptr;
-        std::atomic<native_size_t>* counter = nullptr;
+        std::lock_guard lock(YaAraFactory::registry_mutex());
+        auto& reg = YaAraFactory::registry();
         for (auto& [key, entry] : reg) {
-            if (entry.create_dc) {
-                found = &entry.create_dc;
-                counter = &entry.next_dc_id;
+            if (entry.slot == N) {
+                callback = entry.create_dc;
                 break;
             }
         }
-        if (!found)
-            return nullptr;
-        dc_id = counter->fetch_add(1, std::memory_order_relaxed);
-        callback = *found;
     }
+    if (!callback)
+        return nullptr;
     return callback(hostInstance, properties, dc_id);
 }
+
+using TrampFn = const ARA::ARADocumentControllerInstance* (ARA_CALL*)(
+    const ARA::ARADocumentControllerHostInstance*,
+    const ARA::ARADocumentProperties*);
+static const TrampFn g_trampolines[8] = {
+    slot_trampoline<0>,
+    slot_trampoline<1>,
+    slot_trampoline<2>,
+    slot_trampoline<3>,
+    slot_trampoline<4>,
+    slot_trampoline<5>,
+    slot_trampoline<6>,
+    slot_trampoline<7>,
+};
 
 // ---------------------------------------------------------------------------
 // fill_factory_fields
 // ---------------------------------------------------------------------------
 
 void YaAraFactory::fill_factory_fields(ARA::ARAFactory& factory) const {
-    if (fill_called_)
-        return;
-    fill_called_ = true;
+    if (!fill_called_) {
+        fill_called_ = true;
 
-    compatible_archive_id_ptrs_.clear();
-    compatible_archive_id_ptrs_.reserve(compatibleDocumentArchiveIDs.size());
-    for (const auto& id : compatibleDocumentArchiveIDs)
-        compatible_archive_id_ptrs_.push_back(id.c_str());
+        compatible_archive_id_ptrs_.clear();
+        compatible_archive_id_ptrs_.reserve(compatibleDocumentArchiveIDs.size());
+        for (const auto& id : compatibleDocumentArchiveIDs)
+            compatible_archive_id_ptrs_.push_back(id.c_str());
+
+        content_type_ptrs_.resize(analyzeableContentTypes.size());
+        for (size_t i = 0; i < analyzeableContentTypes.size(); ++i)
+            content_type_ptrs_[i] =
+                static_cast<ARA::ARAContentType>(analyzeableContentTypes[i]);
+    }
 
     factory.structSize = std::min(static_cast<ARA::ARASize>(structSize),
                                   sizeof(ARA::ARAFactory));
@@ -109,16 +120,10 @@ void YaAraFactory::fill_factory_fields(ARA::ARAFactory& factory) const {
     factory.compatibleDocumentArchiveIDs =
         compatible_archive_id_ptrs_.empty() ? nullptr
                                             : compatible_archive_id_ptrs_.data();
-
-    content_type_ptrs_.resize(analyzeableContentTypes.size());
-    for (size_t i = 0; i < analyzeableContentTypes.size(); ++i)
-        content_type_ptrs_[i] =
-            static_cast<ARA::ARAContentType>(analyzeableContentTypes[i]);
     factory.analyzeableContentTypesCount =
         static_cast<ARA::ARASize>(analyzeableContentTypes.size());
     factory.analyzeableContentTypes =
         content_type_ptrs_.empty() ? nullptr : content_type_ptrs_.data();
-
     factory.supportedPlaybackTransformationFlags =
         static_cast<ARA::ARAPlaybackTransformationFlags>(
             supportedPlaybackTransformationFlags);
@@ -136,12 +141,28 @@ ARA::ARAFactory YaAraFactory::to_ara_factory(
     fill_factory_fields(factory);
 
     if (create_dc) {
-        factory.createDocumentControllerWithDocument =
-            ipc_create_document_controller;
-
         std::lock_guard lock(registry_mutex());
+        int slot = -1;
+        for (int i = 0; i < 8; ++i) {
+            if (!g_slot_used[i]) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0) {
+            fprintf(stderr,
+                    "yabridge: ARA factory trampoline pool exhausted "
+                    "(all 8 slots in use)\n");
+            factory.createDocumentControllerWithDocument =
+                stub_create_document_controller;
+            return factory;
+        }
+        g_slot_used[slot] = true;
+        factory.createDocumentControllerWithDocument = g_trampolines[slot];
+
         auto& entry = registry()[factoryID.c_str()];
         entry.create_dc = std::move(create_dc);
+        entry.slot = slot;
         registered_ = true;
     } else {
         factory.createDocumentControllerWithDocument =
@@ -159,7 +180,12 @@ void YaAraFactory::unregister_factory() const noexcept {
     if (!registered_)
         return;
     std::lock_guard lock(registry_mutex());
-    registry().erase(factoryID.c_str());
+    auto it = registry().find(factoryID.c_str());
+    if (it != registry().end()) {
+        if (it->second.slot >= 0 && it->second.slot < 8)
+            g_slot_used[it->second.slot] = false;
+        registry().erase(it);
+    }
     registered_ = false;
 }
 
@@ -196,6 +222,12 @@ YaAraFactory from_ara_factory(const ARA::ARAFactory* factory) {
         const ARA::ARASize limit =
             std::min(factory->compatibleDocumentArchiveIDsCount,
                      static_cast<ARA::ARASize>(256));
+        if (factory->compatibleDocumentArchiveIDsCount > limit) {
+            fprintf(stderr,
+                    "yabridge: ARA factory reports %u compatibleDocumentArchiveIDs, "
+                    "capped at 256\n",
+                    static_cast<unsigned int>(factory->compatibleDocumentArchiveIDsCount));
+        }
         result.compatibleDocumentArchiveIDs.reserve(limit);
         for (ARA::ARASize i = 0; i < limit; ++i) {
             result.compatibleDocumentArchiveIDs.push_back(
@@ -211,6 +243,12 @@ YaAraFactory from_ara_factory(const ARA::ARAFactory* factory) {
         const ARA::ARASize limit =
             std::min(factory->analyzeableContentTypesCount,
                      static_cast<ARA::ARASize>(256));
+        if (factory->analyzeableContentTypesCount > limit) {
+            fprintf(stderr,
+                    "yabridge: ARA factory reports %u analyzeableContentTypes, "
+                    "capped at 256\n",
+                    static_cast<unsigned int>(factory->analyzeableContentTypesCount));
+        }
         result.analyzeableContentTypes.reserve(limit);
         for (ARA::ARASize i = 0; i < limit; ++i) {
             result.analyzeableContentTypes.push_back(

@@ -17,6 +17,7 @@
 #include "vst3.h"
 
 #include <cstring>
+#include <limits>
 
 #include <pluginterfaces/base/ustring.h>
 
@@ -423,60 +424,6 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                         ->notifyUnitByBusChange();
                 },
 #ifdef WITH_ARA
-                [&](const YaAra::HostCallback::CreateAudioReader& request)
-                    -> YaAra::HostCallback::CreateAudioReader::Response {
-                    auto proxy = resolve_proxy(request.ara_dc_id);
-                    if (!proxy)
-                        return {0, 0};
-                    if (!proxy->host_instance_ ||
-                        !proxy->host_instance_->audioAccessControllerInterface)
-                        return {0, 0};
-                    std::lock_guard ref_lock(proxy->host_refs_mutex_);
-                    auto src_it = proxy->audio_source_host_refs_.find(
-                        request.audio_source_host_ref);
-                    if (src_it == proxy->audio_source_host_refs_.end())
-                        return {0, 0};
-                    auto host_ref = reinterpret_cast<ARA::ARAAudioSourceHostRef>(
-                        src_it->second);
-                    auto cc_it = proxy->audio_source_channel_counts_.find(
-                        request.audio_source_host_ref);
-                    const int32_t channel_count =
-                        cc_it != proxy->audio_source_channel_counts_.end()
-                            ? cc_it->second
-                            : 0;
-                    ARA::ARAAudioReaderHostRef reader =
-                        proxy->host_instance_->audioAccessControllerInterface
-                            ->createAudioReaderForSource(
-                                proxy->host_instance_
-                                    ->audioAccessControllerHostRef,
-                                host_ref,
-                                static_cast<ARA::ARABool>(
-                                    request.use_64bit_samples));
-                    const uint64_t handle =
-                        proxy->next_audio_reader_handle_.fetch_add(1);
-                    proxy->audio_reader_host_refs_.emplace(handle, reader);
-                    return {handle, channel_count};
-                },
-                [&](const YaAra::HostCallback::DestroyAudioReader& request)
-                    -> YaAra::HostCallback::DestroyAudioReader::Response {
-                    auto proxy = resolve_proxy(request.ara_dc_id);
-                    if (!proxy)
-                        return Ack{};
-                    auto it = proxy->audio_reader_host_refs_.find(
-                        request.audio_reader_id);
-                    if (it != proxy->audio_reader_host_refs_.end()) {
-                        if (proxy->host_instance_ &&
-                            proxy->host_instance_->audioAccessControllerInterface) {
-                            proxy->host_instance_->audioAccessControllerInterface
-                                ->destroyAudioReader(
-                                    proxy->host_instance_
-                                        ->audioAccessControllerHostRef,
-                                    it->second);
-                        }
-                        proxy->audio_reader_host_refs_.erase(it);
-                    }
-                    return Ack{};
-                },
                 [&](const YaAra::HostCallback::GetArchiveSize& request)
                     -> YaAra::HostCallback::GetArchiveSize::Response {
                     auto proxy = resolve_proxy(request.ara_dc_id);
@@ -1152,6 +1099,16 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                                 ? cc_it->second
                                 : 0;
                     }
+                    if (channel_count <= 0 || channel_count > 8191)
+                        return {};
+                    const uint32_t bytes_per_sample =
+                        static_cast<uint32_t>(request.use_64bit ? sizeof(double)
+                                                                 : sizeof(float));
+                    const uint32_t max_block =
+                        static_cast<uint32_t>(65536) * bytes_per_sample;
+                    if (static_cast<uint64_t>(channel_count) * max_block >
+                        std::numeric_limits<uint32_t>::max())
+                        return {};
                     ARA::ARAAudioReaderHostRef reader =
                         proxy->host_instance_->audioAccessControllerInterface
                             ->createAudioReaderForSource(
@@ -1171,11 +1128,6 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                         std::lock_guard ref_lock(proxy->host_refs_mutex_);
                         proxy->audio_reader_host_refs_.emplace(reader_id, reader);
                     }
-                    const uint32_t bytes_per_sample =
-                        static_cast<uint32_t>(request.use_64bit ? sizeof(double)
-                                                                 : sizeof(float));
-                    const uint32_t max_block =
-                        static_cast<uint32_t>(65536) * bytes_per_sample;
                     AudioShmBuffer::Config cfg{};
                     cfg.name = "yabridge-ara-" + std::to_string(reader_id);
                     cfg.size = static_cast<uint32_t>(channel_count) * max_block;
@@ -1186,11 +1138,14 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                             static_cast<uint32_t>(c) * max_block;
                     cfg.input_offsets = {offsets};
                     cfg.output_offsets = {};
+                    const uint32_t max_samples = max_block / bytes_per_sample;
                     {
                         std::lock_guard shm_lock(
                             proxy->audio_reader_shm_mutex_);
                         proxy->audio_reader_shm_buffers_.emplace(
-                            reader_id, AudioShmBuffer{cfg});
+                            reader_id, std::make_shared<AudioShmBuffer>(cfg));
+                        proxy->audio_reader_max_samples_.emplace(
+                            reader_id, max_samples);
                     }
                     return {reader_id, std::move(cfg)};
                 },
@@ -1220,6 +1175,8 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                             proxy->audio_reader_shm_mutex_);
                         proxy->audio_reader_shm_buffers_.erase(
                             request.audio_reader_id);
+                        proxy->audio_reader_max_samples_.erase(
+                            request.audio_reader_id);
                     }
                     return Ack{};
                 },
@@ -1237,7 +1194,7 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                             return {false};
                         reader = it->second;
                     }
-                    AudioShmBuffer* shm = nullptr;
+                    std::shared_ptr<AudioShmBuffer> shm;
                     int32_t channel_count = 0;
                     {
                         std::lock_guard shm_lock(
@@ -1246,11 +1203,21 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                             request.audio_reader_host_ref);
                         if (it == proxy->audio_reader_shm_buffers_.end())
                             return {false};
-                        shm = &it->second;
+                        shm = it->second;
                         channel_count = static_cast<int32_t>(
                             shm->config_.input_offsets.empty()
                                 ? 0
                                 : shm->config_.input_offsets[0].size());
+                        auto ms_it = proxy->audio_reader_max_samples_.find(
+                            request.audio_reader_host_ref);
+                        const uint32_t max_samples =
+                            ms_it != proxy->audio_reader_max_samples_.end()
+                                ? ms_it->second
+                                : 0;
+                        if (request.sample_count <= 0 ||
+                            static_cast<uint32_t>(request.sample_count) >
+                                max_samples)
+                            return {false};
                     }
                     const size_t bytes_per_sample =
                         request.use_64bit ? sizeof(double) : sizeof(float);
@@ -1400,6 +1367,18 @@ void Vst3PluginBridge::unregister_ara_document_controller(
         logger_.log("WARNING: unregister_ara_document_controller() called with "
                     "unknown ara_dc_id");
     }
+}
+
+std::shared_ptr<AraDocumentControllerProxy>
+Vst3PluginBridge::find_ara_document_controller(
+    ARA::ARADocumentControllerRef ref) noexcept {
+    std::lock_guard lock(ara_document_controllers_mutex_);
+    for (const auto& [id, ptr] : ara_document_controllers_) {
+        if (ptr.get() ==
+            reinterpret_cast<AraDocumentControllerProxy*>(ref))
+            return ptr;
+    }
+    return nullptr;
 }
 
 #endif  // WITH_ARA

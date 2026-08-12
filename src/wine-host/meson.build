@@ -161,7 +161,11 @@ if with_vst3
     'bridges/vst3-impls/context-menu-proxy.cpp',
     'bridges/vst3-impls/host-context-proxy.cpp',
     'bridges/vst3-impls/plug-frame-proxy.cpp',
-    'bridges/vst3-impls/ara-host-callback-proxies.cpp',
     'bridges/vst3.cpp',
   )
+  if with_ara
+    host_sources += files(
+      'bridges/vst3-impls/ara-host-callback-proxies.cpp',
+    )
+  endif
 endif

@@ -107,7 +107,7 @@ struct YaAraSampleChannelArrangement {
     }
 };
 
-struct YaArAAudioSourceProperties {
+struct YaAraAudioSourceProperties {
     std::optional<std::string> name;
     std::string persistent_id;
     int64_t sample_count = 0;
@@ -130,7 +130,7 @@ struct YaArAAudioSourceProperties {
     }
 };
 
-struct YaArAAudioModificationProperties {
+struct YaAraAudioModificationProperties {
     std::optional<std::string> name;
     std::string persistent_id;
 
@@ -232,7 +232,7 @@ struct Int32Response {
 struct BytesResponse {
     std::vector<uint8_t> data;
     template <typename S>
-    void serialize(S& s) { s.container1b(data, 1 << 20); }
+    void serialize(S& s) { s.container1b(data, 1 << 26); }
 };
 
 struct HandleResponse {
@@ -434,7 +434,7 @@ struct AddAudioSource {
 
     native_size_t ara_dc_id;
     uint64_t host_ref;
-    YaArAAudioSourceProperties properties;
+    YaAraAudioSourceProperties properties;
 
     template <typename S>
     void serialize(S& s) {
@@ -449,7 +449,7 @@ struct UpdateAudioSourceProperties {
 
     native_size_t ara_dc_id;
     uint64_t audio_source_ref;
-    YaArAAudioSourceProperties properties;
+    YaAraAudioSourceProperties properties;
 
     template <typename S>
     void serialize(S& s) {
@@ -528,7 +528,7 @@ struct AddAudioModification {
     native_size_t ara_dc_id;
     uint64_t audio_source_ref;
     uint64_t host_ref;
-    YaArAAudioModificationProperties properties;
+    YaAraAudioModificationProperties properties;
 
     template <typename S>
     void serialize(S& s) {
@@ -545,7 +545,7 @@ struct CloneAudioModification {
     native_size_t ara_dc_id;
     uint64_t audio_modification_ref;
     uint64_t host_ref;
-    YaArAAudioModificationProperties properties;
+    YaAraAudioModificationProperties properties;
 
     template <typename S>
     void serialize(S& s) {
@@ -561,7 +561,7 @@ struct UpdateAudioModificationProperties {
 
     native_size_t ara_dc_id;
     uint64_t audio_modification_ref;
-    YaArAAudioModificationProperties properties;
+    YaAraAudioModificationProperties properties;
 
     template <typename S>
     void serialize(S& s) {

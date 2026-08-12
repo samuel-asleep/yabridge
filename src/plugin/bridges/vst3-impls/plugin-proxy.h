@@ -592,10 +592,12 @@ class Vst3PluginProxyImpl : public Vst3PluginProxy {
     ARA::ARAInt32 ara_bound_known_roles_ = 0;
     ARA::ARAInt32 ara_bound_assigned_roles_ = 0;
 
-    // Stub interface tables for the plug-in extension roles. Each entry has
-    // structSize set to indicate the fields we implement (none beyond the struct
-    // header). Hosts must not call methods we do not serve; we only advertise
-    // roles that the Wine-side plugin actually supports.
+    // Interface tables for ARA plug-in extension roles. These forward
+    // implemented role methods over IPC and are populated by
+    // bindToDocumentControllerWithRoles. Each table has structSize set to
+    // indicate the fields we implement. Hosts must not call methods we do not
+    // serve; we only advertise roles that the Wine-side plugin actually
+    // supports.
     ARA::ARAPlaybackRendererInterface ara_playback_renderer_iface_{};
     ARA::ARAEditorRendererInterface ara_editor_renderer_iface_{};
     ARA::ARAEditorViewInterface ara_editor_view_iface_{};

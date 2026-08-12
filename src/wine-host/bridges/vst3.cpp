@@ -1001,6 +1001,8 @@ void Vst3Bridge::run() {
                             instance.editor->show();
 
 #ifdef WITH_ARA
+                            {
+                            std::lock_guard sel_lock(instance.last_ara_selection_mutex);
                             if (instance.last_ara_selection &&
                                 instance.ara_extension_instance) {
                                 const auto* ext =
@@ -1050,6 +1052,7 @@ void Vst3Bridge::run() {
                                         &view_sel);
                                 }
                             }
+                            } // last_ara_selection_mutex scope
 #endif
                         } else {
                             instance.editor.reset();
@@ -1686,6 +1689,18 @@ void Vst3Bridge::run() {
                             return instance.interfaces.plug_in_entry_point
                                 ->bindToDocumentController(dc_ref);
                         }
+                        std::string unavailable_interface;
+                        if (!instance.interfaces.plug_in_entry_point_2 &&
+                            !instance.interfaces.plug_in_entry_point) {
+                            unavailable_interface = "IPlugInEntryPoint2 and IPlugInEntryPoint";
+                        } else if (!instance.interfaces.plug_in_entry_point_2) {
+                            unavailable_interface = "IPlugInEntryPoint2";
+                        } else {
+                            unavailable_interface = "IPlugInEntryPoint (with legacy roles)";
+                        }
+                        logger_.log("WARNING: bindToDocumentControllerWithRoles failed for instance " +
+                                   std::to_string(request.instance_id) +
+                                   " - " + unavailable_interface + " unavailable");
                         return nullptr;
                     })
                     .get();
@@ -2665,7 +2680,10 @@ void Vst3Bridge::run() {
                     break;
                 }
                 default:
-                    copy(data, 64);
+                    logger_.log(
+                        "WARNING: GetContentReaderDataForEventDC: unhandled "
+                        "content type " +
+                        std::to_string(static_cast<int32_t>(ct)));
                     break;
             }
             return {bytes};
@@ -2949,7 +2967,10 @@ void Vst3Bridge::run() {
             -> YaAra::PluginExtension::EditorViewNotifySelection::Response {
             auto [instance_ref, lock] = get_instance(r.instance_id);
             auto& instance = instance_ref;
-            instance.last_ara_selection = r;
+            {
+                std::lock_guard sel_lock(instance.last_ara_selection_mutex);
+                instance.last_ara_selection = r;
+            }
             if (const auto* ext = instance.ara_extension_instance) {
                 if (ext->editorViewInterface &&
                     ext->editorViewInterface->notifySelection) {

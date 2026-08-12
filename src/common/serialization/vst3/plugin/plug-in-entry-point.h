@@ -42,9 +42,6 @@
  * still exists so that `Vst3PluginProxy::ConstructArgs` can carry the
  * detection result across the wire and the host can log that the plugin
  * advertises ARA capability.
- *
- * Actual ARA binding (calling `bindToDocumentControllerWithRoles`) lives
- * outside this class and will be implemented in a later stage.
  */
 class YaPlugInEntryPoint {
    public:
