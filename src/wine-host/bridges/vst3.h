@@ -287,6 +287,12 @@ struct Vst3PluginInstance {
     // The ARAPlugInExtensionInstance returned by bindToDocumentControllerWithRoles.
     // Stored here so plugin extension interface calls can reach the right object.
     const ARA::ARAPlugInExtensionInstance* ara_extension_instance = nullptr;
+
+    // The last notifySelection call received for this instance. Replayed after
+    // attached() so Melodyne's view gets the selection state after its window
+    // exists.
+    std::optional<YaAra::PluginExtension::EditorViewNotifySelection>
+        last_ara_selection;
 #endif
 };
 
@@ -610,5 +616,9 @@ class Vst3Bridge : public HostBridge {
     std::mutex ara_document_controllers_mutex_;
     // Tracks which ARAFactory pointers have already had initializeARAWithConfiguration called.
     std::unordered_set<const ARA::ARAFactory*> ara_initialized_factories_;
+    // Keeps IMainFactory instances alive so their ARAFactory* pointers remain
+    // valid. Keyed by factory_id string.
+    std::unordered_map<std::string, Steinberg::IPtr<ARA::IMainFactory>>
+        ara_main_factories_;
 #endif
 };

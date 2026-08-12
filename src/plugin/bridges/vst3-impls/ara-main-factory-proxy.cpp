@@ -77,7 +77,13 @@ YaMainFactoryImpl::YaMainFactoryImpl(Vst3PluginBridge& bridge,
                             bridge_.unregister_ara_document_controller(ara_dc_id);
                             return nullptr;
                         }},
-                    std::move(response));            } catch (...) {
+                    std::move(response));            } catch (const std::exception& e) {
+                bridge_.logger_.log(
+                    std::string("WARNING: exception in "
+                    "createDocumentControllerWithDocument(): ") + e.what());
+                bridge_.unregister_ara_document_controller(ara_dc_id);
+                return nullptr;
+            } catch (...) {
                 bridge_.logger_.log(
                     "WARNING: exception in "
                     "createDocumentControllerWithDocument(), returning null");

@@ -2124,7 +2124,11 @@ bool Vst3Logger::log_request(bool is_host_plugin,
                               const YaAra::AddAudioSource& r) {
     return log_request_base(
         is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
-            msg << "YaAra::AddAudioSource { ara_dc_id=" << r.ara_dc_id << " }";
+            msg << "YaAra::AddAudioSource { ara_dc_id=" << r.ara_dc_id
+                << ", ch=" << r.properties.channel_count
+                << ", rate=" << r.properties.sample_rate
+                << ", samples=" << r.properties.sample_count
+                << ", 64bit=" << r.properties.merits_64bit_samples << " }";
         });
 }
 
@@ -2227,6 +2231,10 @@ bool Vst3Logger::log_request(bool is_host_plugin,
     return log_request_base(
         is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
             msg << "YaAra::AddPlaybackRegion { ara_dc_id=" << r.ara_dc_id
+                << ", modStart=" << r.properties.start_in_modification_time
+                << ", modDur=" << r.properties.duration_in_modification_time
+                << ", pbStart=" << r.properties.start_in_playback_time
+                << ", pbDur=" << r.properties.duration_in_playback_time
                 << " }";
         });
 }
@@ -2312,6 +2320,66 @@ bool Vst3Logger::log_request(
     return log_request_base(
         is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
             msg << "YaAra::EndRestoringDocumentFromArchive { ara_dc_id="
+                << r.ara_dc_id << " }";
+        });
+}
+
+bool Vst3Logger::log_request(
+    bool is_host_plugin,
+    const YaAra::IsAudioSourceContentAvailableDC& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::IsAudioSourceContentAvailableDC { ara_dc_id="
+                << r.ara_dc_id << " }";
+        });
+}
+
+bool Vst3Logger::log_request(
+    bool is_host_plugin,
+    const YaAra::GetAudioSourceContentGradeDC& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::GetAudioSourceContentGradeDC { ara_dc_id="
+                << r.ara_dc_id << ", content_type=" << r.content_type << " }";
+        });
+}
+
+bool Vst3Logger::log_request(
+    bool is_host_plugin,
+    const YaAra::CreateAudioSourceContentReaderDC& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::CreateAudioSourceContentReaderDC { ara_dc_id="
+                << r.ara_dc_id << " }";
+        });
+}
+
+bool Vst3Logger::log_request(
+    bool is_host_plugin,
+    const YaAra::GetContentReaderEventCountDC& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::GetContentReaderEventCountDC { ara_dc_id="
+                << r.ara_dc_id << " }";
+        });
+}
+
+bool Vst3Logger::log_request(
+    bool is_host_plugin,
+    const YaAra::GetContentReaderDataForEventDC& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::GetContentReaderDataForEventDC { ara_dc_id="
+                << r.ara_dc_id << " }";
+        });
+}
+
+bool Vst3Logger::log_request(
+    bool is_host_plugin,
+    const YaAra::DestroyContentReaderDC& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::DestroyContentReaderDC { ara_dc_id="
                 << r.ara_dc_id << " }";
         });
 }
@@ -2427,9 +2495,14 @@ void Vst3Logger::log_response(bool is_host_plugin,
                       [&](auto& msg) { msg << "\"" << v.value << "\""; });
 }
 
-bool Vst3Logger::log_request(bool /*is_host_plugin*/,
-                               const YaAra::CreateAudioReader& /*r*/) {
-    return false;
+bool Vst3Logger::log_request(bool is_host_plugin,
+                               const YaAra::CreateAudioReader& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::CreateAudioReader { ara_dc_id=" << r.ara_dc_id
+                << ", src=" << r.audio_source_host_ref
+                << ", 64bit=" << r.use_64bit << " }";
+        });
 }
 
 bool Vst3Logger::log_request(bool /*is_host_plugin*/,
@@ -2437,16 +2510,34 @@ bool Vst3Logger::log_request(bool /*is_host_plugin*/,
     return false;
 }
 
-bool Vst3Logger::log_request(bool /*is_host_plugin*/,
-                               const YaAra::ReadAudioSamples& /*r*/) {
-    return false;
+bool Vst3Logger::log_request(bool is_host_plugin,
+                               const YaAra::ReadAudioSamples& r) {
+    return log_request_base(
+        is_host_plugin, Logger::Verbosity::all_events, [&](auto& msg) {
+            msg << "YaAra::ReadAudioSamples { reader=" << r.audio_reader_host_ref
+                << ", pos=" << r.sample_position
+                << ", count=" << r.sample_count << " }";
+        });
 }
 
-void Vst3Logger::log_response(bool /*is_host_plugin*/,
-                               const YaAra::CreateAudioReader::Response& /*v*/) {}
+void Vst3Logger::log_response(bool is_host_plugin,
+                               const YaAra::CreateAudioReader::Response& v) {
+    log_response_base(is_host_plugin, [&](auto& msg) {
+        const int channels = v.shm_config.input_offsets.empty()
+                                 ? 0
+                                 : static_cast<int>(
+                                       v.shm_config.input_offsets[0].size());
+        msg << "reader_id=" << v.reader_id << " shm=\"" << v.shm_config.name
+            << "\" size=" << v.shm_config.size << " channels=" << channels;
+    });
+}
 
-void Vst3Logger::log_response(bool /*is_host_plugin*/,
-                               const YaAra::ReadAudioSamples::Response& /*v*/) {}
+void Vst3Logger::log_response(bool is_host_plugin,
+                               const YaAra::ReadAudioSamples::Response& v) {
+    log_response_base(is_host_plugin, [&](auto& msg) {
+        msg << (v.success ? "ok" : "FAILED");
+    });
+}
 
 bool Vst3Logger::log_request(
     bool is_host_plugin,

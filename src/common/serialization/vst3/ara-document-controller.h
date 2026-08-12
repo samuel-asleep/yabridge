@@ -221,6 +221,26 @@ struct YaAraStoreObjectsFilter {
 
 namespace YaAra {
 
+// -- Shared response wrapper types -------------------------------------------
+
+struct Int32Response {
+    int32_t value = 0;
+    template <typename S>
+    void serialize(S& s) { s.value4b(value); }
+};
+
+struct BytesResponse {
+    std::vector<uint8_t> data;
+    template <typename S>
+    void serialize(S& s) { s.container1b(data, 1 << 20); }
+};
+
+struct HandleResponse {
+    uint64_t value = 0;
+    template <typename S>
+    void serialize(S& s) { s.value8b(value); }
+};
+
 // -- Lifecycle ---------------------------------------------------------------
 
 struct CreateDocumentController {
@@ -729,6 +749,99 @@ struct GetPlaybackRegionHeadAndTailTime {
     }
 };
 
+// -- Content queries (host queries plugin's DC for content) ------------------
+
+struct IsAudioSourceContentAvailableDC {
+    using Response = Int32Response;
+
+    native_size_t ara_dc_id;
+    uint64_t audio_source_ref;
+    int32_t content_type;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_ref);
+        s.value4b(content_type);
+    }
+};
+
+struct GetAudioSourceContentGradeDC {
+    using Response = Int32Response;
+
+    native_size_t ara_dc_id;
+    uint64_t audio_source_ref;
+    int32_t content_type;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_ref);
+        s.value4b(content_type);
+    }
+};
+
+struct CreateAudioSourceContentReaderDC {
+    using Response = Int32Response;
+
+    native_size_t ara_dc_id;
+    uint64_t audio_source_ref;
+    int32_t content_type;
+    std::optional<YaAraContentTimeRange> range;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(audio_source_ref);
+        s.value4b(content_type);
+        s.ext(range, bitsery::ext::InPlaceOptional{},
+              [](S& s, YaAraContentTimeRange& v) { s.object(v); });
+    }
+};
+
+struct GetContentReaderEventCountDC {
+    using Response = Int32Response;
+
+    native_size_t ara_dc_id;
+    uint64_t content_reader_ref;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(content_reader_ref);
+    }
+};
+
+struct GetContentReaderDataForEventDC {
+    using Response = BytesResponse;
+
+    native_size_t ara_dc_id;
+    uint64_t content_reader_ref;
+    int32_t event_index;
+    int32_t content_type;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(content_reader_ref);
+        s.value4b(event_index);
+        s.value4b(content_type);
+    }
+};
+
+struct DestroyContentReaderDC {
+    using Response = Ack;
+
+    native_size_t ara_dc_id;
+    uint64_t content_reader_ref;
+
+    template <typename S>
+    void serialize(S& s) {
+        s.value8b(ara_dc_id);
+        s.value8b(content_reader_ref);
+    }
+};
+
 // -- Archiving ---------------------------------------------------------------
 
 struct StoreObjectsToArchive {
@@ -808,32 +921,10 @@ struct EndRestoringDocumentFromArchive {
 
 namespace HostCallback {
 
-// Wrapper for uint64_t handle responses
-struct HandleResponse {
-    uint64_t value = 0;
-    template <typename S>
-    void serialize(S& s) {
-        s.value8b(value);
-    }
-};
-
-// Wrapper for ARASize / ARABool / ARAInt32 / ARAContentGrade responses
-struct Int32Response {
-    int32_t value = 0;
-    template <typename S>
-    void serialize(S& s) {
-        s.value4b(value);
-    }
-};
-
-// Wrapper for archive data blob responses
-struct BytesResponse {
-    std::vector<uint8_t> data;
-    template <typename S>
-    void serialize(S& s) {
-        s.container1b(data, 67108864);
-    }
-};
+// Alias shared response types from parent namespace.
+using HandleResponse = YaAra::HandleResponse;
+using Int32Response  = YaAra::Int32Response;
+using BytesResponse  = YaAra::BytesResponse;
 
 // Wrapper for string responses (e.g. archive ID)
 struct StringResponse {

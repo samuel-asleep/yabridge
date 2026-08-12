@@ -17,6 +17,7 @@
 #ifdef WITH_ARA
 
 #include "ara-host-callback-proxies.h"
+#include "../../use-linux-asio.h"
 
 #include <cstring>
 

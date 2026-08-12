@@ -1158,8 +1158,13 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                                 proxy->host_instance_->audioAccessControllerHostRef,
                                 host_ref,
                                 static_cast<ARA::ARABool>(request.use_64bit));
-                    if (!reader)
+                    if (!reader) {
+                        logger_.log(
+                            "WARNING: ARA createAudioReaderForSource returned "
+                            "null for src=" +
+                            std::to_string(request.audio_source_host_ref));
                         return {};
+                    }
                     const uint64_t reader_id =
                         proxy->next_audio_reader_handle_.fetch_add(1);
                     {

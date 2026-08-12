@@ -279,6 +279,19 @@ class Vst3Logger {
     bool log_request(bool is_host_plugin,
                      const YaAra::EndRestoringDocumentFromArchive&);
 
+    bool log_request(bool is_host_plugin,
+                     const YaAra::IsAudioSourceContentAvailableDC&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::GetAudioSourceContentGradeDC&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::CreateAudioSourceContentReaderDC&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::GetContentReaderEventCountDC&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::GetContentReaderDataForEventDC&);
+    bool log_request(bool is_host_plugin,
+                     const YaAra::DestroyContentReaderDC&);
+
     // ARA response types
     void log_response(bool is_host_plugin,
                       const YaAra::GetPlaybackRegionHeadAndTailTime::Response&);

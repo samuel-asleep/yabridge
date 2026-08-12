@@ -667,10 +667,17 @@ void ARA_CALL AraDocumentControllerProxy::destroy_region_sequence(
 
 ARA::ARABool ARA_CALL
 AraDocumentControllerProxy::is_audio_source_content_available(
-    ARA::ARADocumentControllerRef /*r*/,
-    ARA::ARAAudioSourceRef /*audioSourceRef*/,
-    ARA::ARAContentType /*contentType*/) {
-    return ARA::kARAFalse;
+    ARA::ARADocumentControllerRef r,
+    ARA::ARAAudioSourceRef audioSourceRef,
+    ARA::ARAContentType contentType) {
+    auto* p = self(r);
+    return static_cast<ARA::ARABool>(
+        p->bridge_.send_mutually_recursive_message(
+            YaAra::IsAudioSourceContentAvailableDC{
+                p->ara_dc_id_,
+                reinterpret_cast<uint64_t>(audioSourceRef),
+                static_cast<int32_t>(contentType)})
+            .value);
 }
 
 ARA::ARABool ARA_CALL
@@ -699,19 +706,46 @@ void ARA_CALL AraDocumentControllerProxy::request_audio_source_content_analysis(
 
 ARA::ARAContentGrade ARA_CALL
 AraDocumentControllerProxy::get_audio_source_content_grade(
-    ARA::ARADocumentControllerRef /*r*/,
-    ARA::ARAAudioSourceRef /*audioSourceRef*/,
-    ARA::ARAContentType /*contentType*/) {
-    return ARA::kARAContentGradeInitial;
+    ARA::ARADocumentControllerRef r,
+    ARA::ARAAudioSourceRef audioSourceRef,
+    ARA::ARAContentType contentType) {
+    auto* p = self(r);
+    return static_cast<ARA::ARAContentGrade>(
+        p->bridge_.send_mutually_recursive_message(
+            YaAra::GetAudioSourceContentGradeDC{
+                p->ara_dc_id_,
+                reinterpret_cast<uint64_t>(audioSourceRef),
+                static_cast<int32_t>(contentType)})
+            .value);
 }
 
 ARA::ARAContentReaderRef ARA_CALL
 AraDocumentControllerProxy::create_audio_source_content_reader(
-    ARA::ARADocumentControllerRef /*r*/,
-    ARA::ARAAudioSourceRef /*audioSourceRef*/,
-    ARA::ARAContentType /*contentType*/,
-    const ARA::ARAContentTimeRange* /*range*/) {
-    return nullptr;
+    ARA::ARADocumentControllerRef r,
+    ARA::ARAAudioSourceRef audioSourceRef,
+    ARA::ARAContentType contentType,
+    const ARA::ARAContentTimeRange* range) {
+    auto* p = self(r);
+    std::optional<YaAraContentTimeRange> range_opt;
+    if (range)
+        range_opt = YaAraContentTimeRange{range->start, range->duration};
+    const int32_t handle =
+        p->bridge_.send_mutually_recursive_message(
+            YaAra::CreateAudioSourceContentReaderDC{
+                p->ara_dc_id_,
+                reinterpret_cast<uint64_t>(audioSourceRef),
+                static_cast<int32_t>(contentType),
+                range_opt})
+            .value;
+    if (!handle)
+        return nullptr;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->content_reader_type_map_[static_cast<uint64_t>(handle)] =
+            contentType;
+    }
+    return reinterpret_cast<ARA::ARAContentReaderRef>(
+        static_cast<uint64_t>(handle));
 }
 
 ARA::ARABool ARA_CALL
@@ -765,22 +799,124 @@ AraDocumentControllerProxy::create_playback_region_content_reader(
 }
 
 ARA::ARAInt32 ARA_CALL AraDocumentControllerProxy::get_content_reader_event_count(
-    ARA::ARADocumentControllerRef /*r*/,
-    ARA::ARAContentReaderRef /*contentReaderRef*/) {
-    return 0;
+    ARA::ARADocumentControllerRef r,
+    ARA::ARAContentReaderRef contentReaderRef) {
+    auto* p = self(r);
+    return static_cast<ARA::ARAInt32>(
+        p->bridge_.send_mutually_recursive_message(
+            YaAra::GetContentReaderEventCountDC{
+                p->ara_dc_id_,
+                reinterpret_cast<uint64_t>(contentReaderRef)})
+            .value);
 }
 
 const void* ARA_CALL
 AraDocumentControllerProxy::get_content_reader_data_for_event(
-    ARA::ARADocumentControllerRef /*r*/,
-    ARA::ARAContentReaderRef /*contentReaderRef*/,
-    ARA::ARAInt32 /*eventIndex*/) {
+    ARA::ARADocumentControllerRef r,
+    ARA::ARAContentReaderRef contentReaderRef,
+    ARA::ARAInt32 eventIndex) {
+    auto* p = self(r);
+    ARA::ARAContentType content_type = ARA::kARAContentTypeNotes;
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        auto it = p->content_reader_type_map_.find(
+            reinterpret_cast<uint64_t>(contentReaderRef));
+        if (it != p->content_reader_type_map_.end())
+            content_type = it->second;
+    }
+    const auto response =
+        p->bridge_.send_mutually_recursive_message(
+            YaAra::GetContentReaderDataForEventDC{
+                p->ara_dc_id_,
+                reinterpret_cast<uint64_t>(contentReaderRef),
+                static_cast<int32_t>(eventIndex),
+                static_cast<int32_t>(content_type)});
+    if (response.data.empty())
+        return nullptr;
+
+    std::lock_guard lock(p->host_refs_mutex_);
+    p->last_event_data_cache_ = response.data;
+    const auto& bytes = p->last_event_data_cache_;
+
+    // Decode bytes back into the typed struct.
+    switch (content_type) {
+        case ARA::kARAContentTypeNotes:
+            if (bytes.size() >= sizeof(ARA::ARAContentNote)) {
+                p->decoded_event_.note = {};
+                std::memcpy(&p->decoded_event_.note, bytes.data(),
+                            sizeof(ARA::ARAContentNote));
+                return &p->decoded_event_.note;
+            }
+            break;
+        case ARA::kARAContentTypeTempoEntries:
+            if (bytes.size() >= sizeof(ARA::ARAContentTempoEntry)) {
+                p->decoded_event_.tempo = {};
+                std::memcpy(&p->decoded_event_.tempo, bytes.data(),
+                            sizeof(ARA::ARAContentTempoEntry));
+                return &p->decoded_event_.tempo;
+            }
+            break;
+        case ARA::kARAContentTypeBarSignatures:
+            if (bytes.size() >= sizeof(ARA::ARAContentBarSignature)) {
+                p->decoded_event_.bar = {};
+                std::memcpy(&p->decoded_event_.bar, bytes.data(),
+                            sizeof(ARA::ARAContentBarSignature));
+                return &p->decoded_event_.bar;
+            }
+            break;
+        case ARA::kARAContentTypeStaticTuning:
+            if (bytes.size() >= sizeof(ARA::ARAContentTuning)) {
+                p->decoded_event_.tuning = {};
+                std::memcpy(&p->decoded_event_.tuning, bytes.data(),
+                            sizeof(ARA::ARAContentTuning));
+                return &p->decoded_event_.tuning;
+            }
+            break;
+        case ARA::kARAContentTypeKeySignatures:
+            if (bytes.size() >= sizeof(ARA::ARAContentKeySignature)) {
+                p->decoded_event_.key = {};
+                std::memcpy(&p->decoded_event_.key, bytes.data(),
+                            sizeof(ARA::ARAContentKeySignature));
+                return &p->decoded_event_.key;
+            }
+            break;
+        case ARA::kARAContentTypeSheetChords:
+            if (bytes.size() >= sizeof(ARA::ARAContentChord)) {
+                p->decoded_event_.chord = {};
+                std::memcpy(&p->decoded_event_.chord, bytes.data(),
+                            sizeof(ARA::ARAContentChord));
+                // The name string follows the struct in the byte buffer.
+                if (bytes.size() > sizeof(ARA::ARAContentChord)) {
+                    p->decoded_chord_name_.assign(
+                        reinterpret_cast<const char*>(
+                            bytes.data() + sizeof(ARA::ARAContentChord)));
+                    p->decoded_event_.chord.name =
+                        p->decoded_chord_name_.c_str();
+                } else {
+                    p->decoded_event_.chord.name = nullptr;
+                }
+                return &p->decoded_event_.chord;
+            }
+            break;
+        default:
+            return bytes.data();
+    }
     return nullptr;
 }
 
 void ARA_CALL AraDocumentControllerProxy::destroy_content_reader(
-    ARA::ARADocumentControllerRef /*r*/,
-    ARA::ARAContentReaderRef /*contentReaderRef*/) {}
+    ARA::ARADocumentControllerRef r,
+    ARA::ARAContentReaderRef contentReaderRef) {
+    auto* p = self(r);
+    {
+        std::lock_guard lock(p->host_refs_mutex_);
+        p->content_reader_type_map_.erase(
+            reinterpret_cast<uint64_t>(contentReaderRef));
+    }
+    p->bridge_.send_message(YaAra::DestroyContentReaderDC{
+        p->ara_dc_id_,
+        reinterpret_cast<uint64_t>(contentReaderRef)});
+}
 
 
 void ARA_CALL AraDocumentControllerProxy::get_playback_region_head_and_tail_time(

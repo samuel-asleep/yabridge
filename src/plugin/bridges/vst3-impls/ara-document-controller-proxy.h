@@ -19,8 +19,11 @@
 #ifdef WITH_ARA
 
 #include <atomic>
+#include <cstring>
 #include <mutex>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <ARAInterface.h>
 
@@ -67,6 +70,25 @@ class AraDocumentControllerProxy {
     std::unordered_map<uint64_t, ARA::ARAContentReaderHostRef>
         content_reader_host_refs_;
     std::atomic_uint64_t next_content_reader_handle_{1};
+
+    // DC-side content reader type tracking (plugin calls our DC to read its
+    // own analysis results; we need the type to deserialize event data).
+    std::unordered_map<uint64_t, ARA::ARAContentType>
+        content_reader_type_map_;
+    // Last event data returned by get_content_reader_data_for_event; kept
+    // alive until the next call so the caller's pointer stays valid.
+    std::vector<uint8_t> last_event_data_cache_;
+    // Decoded event struct — one per content type — kept alive across calls.
+    union DecodedEvent {
+        ARA::ARAContentNote          note;
+        ARA::ARAContentTempoEntry    tempo;
+        ARA::ARAContentBarSignature  bar;
+        ARA::ARAContentTuning        tuning;
+        ARA::ARAContentKeySignature  key;
+        ARA::ARAContentChord         chord;
+        DecodedEvent() noexcept { std::memset(this, 0, sizeof(*this)); }
+    } decoded_event_;
+    std::string decoded_chord_name_;
 
     // Audio reader host refs created by the host.
     std::unordered_map<uint64_t, ARA::ARAAudioReaderHostRef>
