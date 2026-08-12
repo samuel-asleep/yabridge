@@ -1003,12 +1003,20 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     auto proxy = resolve_proxy(request.ara_dc_id);
                     if (!proxy)
                         return Ack{};
-                    if (proxy->host_instance_ &&
-                        proxy->host_instance_->modelUpdateControllerInterface)
-                        proxy->host_instance_->modelUpdateControllerInterface
-                            ->notifyDocumentDataChanged(
-                                proxy->host_instance_
-                                    ->modelUpdateControllerHostRef);
+                    const auto* iface =
+                        proxy->host_instance_
+                            ? proxy->host_instance_
+                                  ->modelUpdateControllerInterface
+                            : nullptr;
+                    if (iface &&
+                        iface->structSize >=
+                            ARA_IMPLEMENTED_STRUCT_SIZE(
+                                ARAModelUpdateControllerInterface,
+                                notifyDocumentDataChanged) &&
+                        iface->notifyDocumentDataChanged)
+                        iface->notifyDocumentDataChanged(
+                            proxy->host_instance_
+                                ->modelUpdateControllerHostRef);
                     return Ack{};
                 },
                 [&](const YaAra::HostCallback::RequestStartPlayback& request)
