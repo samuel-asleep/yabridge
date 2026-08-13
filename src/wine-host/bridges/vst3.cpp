@@ -2879,11 +2879,15 @@ void Vst3Bridge::run() {
             if (const auto* ext = instance.ara_extension_instance) {
                 if (ext->playbackRendererInterface &&
                     ext->playbackRendererInterface->addPlaybackRegion) {
-                    ext->playbackRendererInterface->addPlaybackRegion(
-                        reinterpret_cast<ARA::ARAPlaybackRendererRef>(
-                            r.playback_renderer_ref),
-                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
-                            r.playback_region_ref));
+                    const auto ref = r.playback_renderer_ref;
+                    const auto region = r.playback_region_ref;
+                    main_context_
+                        .run_in_context([ext, ref, region]() {
+                            ext->playbackRendererInterface->addPlaybackRegion(
+                                reinterpret_cast<ARA::ARAPlaybackRendererRef>(ref),
+                                reinterpret_cast<ARA::ARAPlaybackRegionRef>(region));
+                        })
+                        .get();
                 }
             }
             return Ack{};
@@ -2894,11 +2898,15 @@ void Vst3Bridge::run() {
             if (const auto* ext = instance.ara_extension_instance) {
                 if (ext->playbackRendererInterface &&
                     ext->playbackRendererInterface->removePlaybackRegion) {
-                    ext->playbackRendererInterface->removePlaybackRegion(
-                        reinterpret_cast<ARA::ARAPlaybackRendererRef>(
-                            r.playback_renderer_ref),
-                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
-                            r.playback_region_ref));
+                    const auto ref = r.playback_renderer_ref;
+                    const auto region = r.playback_region_ref;
+                    main_context_
+                        .run_in_context([ext, ref, region]() {
+                            ext->playbackRendererInterface->removePlaybackRegion(
+                                reinterpret_cast<ARA::ARAPlaybackRendererRef>(ref),
+                                reinterpret_cast<ARA::ARAPlaybackRegionRef>(region));
+                        })
+                        .get();
                 }
             }
             return Ack{};
@@ -2909,11 +2917,15 @@ void Vst3Bridge::run() {
             if (const auto* ext = instance.ara_extension_instance) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->addPlaybackRegion) {
-                    ext->editorRendererInterface->addPlaybackRegion(
-                        reinterpret_cast<ARA::ARAEditorRendererRef>(
-                            r.editor_renderer_ref),
-                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
-                            r.playback_region_ref));
+                    const auto ref = r.editor_renderer_ref;
+                    const auto region = r.playback_region_ref;
+                    main_context_
+                        .run_in_context([ext, ref, region]() {
+                            ext->editorRendererInterface->addPlaybackRegion(
+                                reinterpret_cast<ARA::ARAEditorRendererRef>(ref),
+                                reinterpret_cast<ARA::ARAPlaybackRegionRef>(region));
+                        })
+                        .get();
                 }
             }
             return Ack{};
@@ -2924,11 +2936,15 @@ void Vst3Bridge::run() {
             if (const auto* ext = instance.ara_extension_instance) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->removePlaybackRegion) {
-                    ext->editorRendererInterface->removePlaybackRegion(
-                        reinterpret_cast<ARA::ARAEditorRendererRef>(
-                            r.editor_renderer_ref),
-                        reinterpret_cast<ARA::ARAPlaybackRegionRef>(
-                            r.playback_region_ref));
+                    const auto ref = r.editor_renderer_ref;
+                    const auto region = r.playback_region_ref;
+                    main_context_
+                        .run_in_context([ext, ref, region]() {
+                            ext->editorRendererInterface->removePlaybackRegion(
+                                reinterpret_cast<ARA::ARAEditorRendererRef>(ref),
+                                reinterpret_cast<ARA::ARAPlaybackRegionRef>(region));
+                        })
+                        .get();
                 }
             }
             return Ack{};
@@ -2939,11 +2955,15 @@ void Vst3Bridge::run() {
             if (const auto* ext = instance.ara_extension_instance) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->addRegionSequence) {
-                    ext->editorRendererInterface->addRegionSequence(
-                        reinterpret_cast<ARA::ARAEditorRendererRef>(
-                            r.editor_renderer_ref),
-                        reinterpret_cast<ARA::ARARegionSequenceRef>(
-                            r.region_sequence_ref));
+                    const auto ref = r.editor_renderer_ref;
+                    const auto seq = r.region_sequence_ref;
+                    main_context_
+                        .run_in_context([ext, ref, seq]() {
+                            ext->editorRendererInterface->addRegionSequence(
+                                reinterpret_cast<ARA::ARAEditorRendererRef>(ref),
+                                reinterpret_cast<ARA::ARARegionSequenceRef>(seq));
+                        })
+                        .get();
                 }
             }
             return Ack{};
@@ -2954,11 +2974,15 @@ void Vst3Bridge::run() {
             if (const auto* ext = instance.ara_extension_instance) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->removeRegionSequence) {
-                    ext->editorRendererInterface->removeRegionSequence(
-                        reinterpret_cast<ARA::ARAEditorRendererRef>(
-                            r.editor_renderer_ref),
-                        reinterpret_cast<ARA::ARARegionSequenceRef>(
-                            r.region_sequence_ref));
+                    const auto ref = r.editor_renderer_ref;
+                    const auto seq = r.region_sequence_ref;
+                    main_context_
+                        .run_in_context([ext, ref, seq]() {
+                            ext->editorRendererInterface->removeRegionSequence(
+                                reinterpret_cast<ARA::ARAEditorRendererRef>(ref),
+                                reinterpret_cast<ARA::ARARegionSequenceRef>(seq));
+                        })
+                        .get();
                 }
             }
             return Ack{};
