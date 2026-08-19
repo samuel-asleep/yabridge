@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -285,8 +286,9 @@ struct Vst3PluginInstance {
 
 #ifdef WITH_ARA
     // The ARAPlugInExtensionInstance returned by bindToDocumentControllerWithRoles.
-    // Stored here so plugin extension interface calls can reach the right object.
-    const ARA::ARAPlugInExtensionInstance* ara_extension_instance = nullptr;
+    // Written on the GUI thread (via run_in_context), read on the IPC dispatch
+    // thread from EditorViewNotifySelection. Must be atomic to avoid a data race.
+    std::atomic<const ARA::ARAPlugInExtensionInstance*> ara_extension_instance{nullptr};
 
     // The last notifySelection call received for this instance. Replayed after
     // attached() so Melodyne's view gets the selection state after its window

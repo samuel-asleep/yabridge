@@ -1004,9 +1004,11 @@ void Vst3Bridge::run() {
                             {
                             std::lock_guard sel_lock(instance.last_ara_selection_mutex);
                             if (instance.last_ara_selection &&
-                                instance.ara_extension_instance) {
+                                instance.ara_extension_instance.load(
+                                    std::memory_order_relaxed)) {
                                 const auto* ext =
-                                    instance.ara_extension_instance;
+                                    instance.ara_extension_instance.load(
+                                        std::memory_order_relaxed);
                                 if (ext->editorViewInterface &&
                                     ext->editorViewInterface->notifySelection) {
                                     const auto& sel =
@@ -1712,7 +1714,8 @@ void Vst3Bridge::run() {
             main_context_
                 .run_in_context([&]() {
                     auto [instance, _] = get_instance(request.instance_id);
-                    instance.ara_extension_instance = ext;
+                    instance.ara_extension_instance.store(
+                        ext, std::memory_order_release);
                 })
                 .get();
 
@@ -2907,7 +2910,8 @@ void Vst3Bridge::run() {
         [&](const YaAra::PluginExtension::PlaybackRendererAddRegion& r)
             -> YaAra::PluginExtension::PlaybackRendererAddRegion::Response {
             const auto& [instance, _] = get_instance(r.instance_id);
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->playbackRendererInterface &&
                     ext->playbackRendererInterface->addPlaybackRegion) {
                     const auto ref = r.playback_renderer_ref;
@@ -2926,7 +2930,8 @@ void Vst3Bridge::run() {
         [&](const YaAra::PluginExtension::PlaybackRendererRemoveRegion& r)
             -> YaAra::PluginExtension::PlaybackRendererRemoveRegion::Response {
             const auto& [instance, _] = get_instance(r.instance_id);
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->playbackRendererInterface &&
                     ext->playbackRendererInterface->removePlaybackRegion) {
                     const auto ref = r.playback_renderer_ref;
@@ -2945,7 +2950,8 @@ void Vst3Bridge::run() {
         [&](const YaAra::PluginExtension::EditorRendererAddRegion& r)
             -> YaAra::PluginExtension::EditorRendererAddRegion::Response {
             const auto& [instance, _] = get_instance(r.instance_id);
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->addPlaybackRegion) {
                     const auto ref = r.editor_renderer_ref;
@@ -2964,7 +2970,8 @@ void Vst3Bridge::run() {
         [&](const YaAra::PluginExtension::EditorRendererRemoveRegion& r)
             -> YaAra::PluginExtension::EditorRendererRemoveRegion::Response {
             const auto& [instance, _] = get_instance(r.instance_id);
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->removePlaybackRegion) {
                     const auto ref = r.editor_renderer_ref;
@@ -2983,7 +2990,8 @@ void Vst3Bridge::run() {
         [&](const YaAra::PluginExtension::EditorRendererAddRegionSequence& r)
             -> YaAra::PluginExtension::EditorRendererAddRegionSequence::Response {
             const auto& [instance, _] = get_instance(r.instance_id);
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->addRegionSequence) {
                     const auto ref = r.editor_renderer_ref;
@@ -3002,7 +3010,8 @@ void Vst3Bridge::run() {
         [&](const YaAra::PluginExtension::EditorRendererRemoveRegionSequence& r)
             -> YaAra::PluginExtension::EditorRendererRemoveRegionSequence::Response {
             const auto& [instance, _] = get_instance(r.instance_id);
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->editorRendererInterface &&
                     ext->editorRendererInterface->removeRegionSequence) {
                     const auto ref = r.editor_renderer_ref;
@@ -3026,7 +3035,8 @@ void Vst3Bridge::run() {
                 std::lock_guard sel_lock(instance.last_ara_selection_mutex);
                 instance.last_ara_selection = r;
             }
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->editorViewInterface &&
                     ext->editorViewInterface->notifySelection) {
                     std::vector<ARA::ARAPlaybackRegionRef> regions;
@@ -3069,7 +3079,8 @@ void Vst3Bridge::run() {
         [&](const YaAra::PluginExtension::EditorViewNotifyHideRegionSequences& r)
             -> YaAra::PluginExtension::EditorViewNotifyHideRegionSequences::Response {
             const auto& [instance, _] = get_instance(r.instance_id);
-            if (const auto* ext = instance.ara_extension_instance) {
+            if (const auto* ext = instance.ara_extension_instance.load(
+                    std::memory_order_acquire)) {
                 if (ext->editorViewInterface &&
                     ext->editorViewInterface->notifyHideRegionSequences) {
                     std::vector<ARA::ARARegionSequenceRef> seqs;

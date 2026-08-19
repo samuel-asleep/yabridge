@@ -1388,7 +1388,7 @@ struct EditorViewNotifySelection {
         s.value8b(editor_view_ref);
         s.container8b(playback_region_refs, 65536);
         s.container8b(region_sequence_refs, 65536);
-        s.ext(time_range, bitsery::ext::StdOptional{},
+        s.ext(time_range, bitsery::ext::InPlaceOptional{},
               [](S& s2, YaAraContentTimeRange& v) { s2.object(v); });
     }
 };

@@ -640,17 +640,21 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     if (!proxy->host_instance_ ||
                         !proxy->host_instance_->contentAccessControllerInterface)
                         return {0};
-                    std::lock_guard ref_lock(proxy->host_refs_mutex_);
-                    auto src_it = proxy->audio_source_host_refs_.find(
-                        request.audio_source_host_ref);
-                    if (src_it == proxy->audio_source_host_refs_.end())
-                        return {0};
+                    ARA::ARAAudioSourceHostRef src{};
+                    {
+                        std::lock_guard ref_lock(proxy->host_refs_mutex_);
+                        auto src_it = proxy->audio_source_host_refs_.find(
+                            request.audio_source_host_ref);
+                        if (src_it == proxy->audio_source_host_refs_.end())
+                            return {0};
+                        src = src_it->second;
+                    }
                     return {static_cast<int32_t>(
                         proxy->host_instance_->contentAccessControllerInterface
                             ->isAudioSourceContentAvailable(
                                 proxy->host_instance_
                                     ->contentAccessControllerHostRef,
-                                src_it->second,
+                                src,
                                 static_cast<ARA::ARAContentType>(
                                     request.content_type)))};
                 },
@@ -664,17 +668,21 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     if (!proxy->host_instance_ ||
                         !proxy->host_instance_->contentAccessControllerInterface)
                         return {0};
-                    std::lock_guard ref_lock(proxy->host_refs_mutex_);
-                    auto src_it = proxy->audio_source_host_refs_.find(
-                        request.audio_source_host_ref);
-                    if (src_it == proxy->audio_source_host_refs_.end())
-                        return {0};
+                    ARA::ARAAudioSourceHostRef src{};
+                    {
+                        std::lock_guard ref_lock(proxy->host_refs_mutex_);
+                        auto src_it = proxy->audio_source_host_refs_.find(
+                            request.audio_source_host_ref);
+                        if (src_it == proxy->audio_source_host_refs_.end())
+                            return {0};
+                        src = src_it->second;
+                    }
                     return {static_cast<int32_t>(
                         proxy->host_instance_->contentAccessControllerInterface
                             ->getAudioSourceContentGrade(
                                 proxy->host_instance_
                                     ->contentAccessControllerHostRef,
-                                src_it->second,
+                                src,
                                 static_cast<ARA::ARAContentType>(
                                     request.content_type)))};
                 },
