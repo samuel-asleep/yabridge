@@ -25,9 +25,9 @@
 // Static registry
 // ---------------------------------------------------------------------------
 
-std::unordered_map<const char*, YaAraFactory::RegistryEntry>&
+std::unordered_map<std::string, YaAraFactory::RegistryEntry>&
 YaAraFactory::registry() {
-    static std::unordered_map<const char*, RegistryEntry> r;
+    static std::unordered_map<std::string, RegistryEntry> r;
     return r;
 }
 
@@ -160,7 +160,7 @@ ARA::ARAFactory YaAraFactory::to_ara_factory(
         g_slot_used[slot] = true;
         factory.createDocumentControllerWithDocument = g_trampolines[slot];
 
-        auto& entry = registry()[factoryID.c_str()];
+        auto& entry = registry()[factoryID];
         entry.create_dc = std::move(create_dc);
         entry.slot = slot;
         registered_ = true;
@@ -180,7 +180,7 @@ void YaAraFactory::unregister_factory() const noexcept {
     if (!registered_)
         return;
     std::lock_guard lock(registry_mutex());
-    auto it = registry().find(factoryID.c_str());
+    auto it = registry().find(factoryID);
     if (it != registry().end()) {
         if (it->second.slot >= 0 && it->second.slot < 8)
             g_slot_used[it->second.slot] = false;

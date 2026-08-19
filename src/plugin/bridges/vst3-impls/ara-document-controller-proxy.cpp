@@ -239,6 +239,8 @@ void ARA_CALL AraDocumentControllerProxy::destroy(
     auto* p = self(r);
     p->bridge_.send_message(
         YaAra::DestroyDocumentController{p->ara_dc_id_});
+    // unregister_ara_document_controller drops the shared_ptr that owns *p,
+    // so p is dangling after this call. Nothing may access p after this line.
     p->bridge_.unregister_ara_document_controller(p->ara_dc_id_);
 }
 
@@ -860,22 +862,62 @@ AraDocumentControllerProxy::get_content_reader_data_for_event(
                 return &cache.decoded_event.bar;
             }
             break;
-        case ARA::kARAContentTypeStaticTuning:
-            if (bytes.size() >= sizeof(ARA::ARAContentTuning)) {
-                cache.decoded_event.tuning = {};
-                std::memcpy(&cache.decoded_event.tuning, bytes.data(),
-                            sizeof(ARA::ARAContentTuning));
-                return &cache.decoded_event.tuning;
-            }
-            break;
-        case ARA::kARAContentTypeKeySignatures:
-            if (bytes.size() >= sizeof(ARA::ARAContentKeySignature)) {
-                cache.decoded_event.key = {};
-                std::memcpy(&cache.decoded_event.key, bytes.data(),
-                            sizeof(ARA::ARAContentKeySignature));
-                return &cache.decoded_event.key;
-            }
-            break;
+        case ARA::kARAContentTypeStaticTuning: {
+            const uint8_t* src = bytes.data();
+            const uint8_t* end = src + bytes.size();
+            ARA::ARAContentTuning& t = cache.decoded_event.tuning;
+            t = {};
+            auto read = [&](void* dst, size_t n) -> bool {
+                if (src + n > end) return false;
+                std::memcpy(dst, src, n);
+                src += n;
+                return true;
+            };
+            if (!read(&t.concertPitchFrequency, sizeof(t.concertPitchFrequency)) ||
+                !read(&t.tunings, sizeof(t.tunings)))
+                break;
+            uint32_t name_len = 0;
+            if (!read(&name_len, sizeof(name_len)))
+                break;
+            if (src + name_len > end)
+                break;
+            cache.decoded_chord_name.assign(
+                reinterpret_cast<const char*>(src), name_len);
+            src += name_len;
+            t.name = cache.decoded_chord_name.empty()
+                         ? nullptr
+                         : cache.decoded_chord_name.c_str();
+            return &t;
+        }
+        case ARA::kARAContentTypeKeySignatures: {
+            const uint8_t* src = bytes.data();
+            const uint8_t* end = src + bytes.size();
+            ARA::ARAContentKeySignature& k = cache.decoded_event.key;
+            k = {};
+            auto read = [&](void* dst, size_t n) -> bool {
+                if (src + n > end) return false;
+                std::memcpy(dst, src, n);
+                src += n;
+                return true;
+            };
+            if (!read(&k.root, sizeof(k.root)) ||
+                !read(&k.intervals, sizeof(k.intervals)))
+                break;
+            uint32_t name_len = 0;
+            if (!read(&name_len, sizeof(name_len)))
+                break;
+            if (src + name_len > end)
+                break;
+            cache.decoded_chord_name.assign(
+                reinterpret_cast<const char*>(src), name_len);
+            src += name_len;
+            k.name = cache.decoded_chord_name.empty()
+                         ? nullptr
+                         : cache.decoded_chord_name.c_str();
+            if (!read(&k.position, sizeof(k.position)))
+                break;
+            return &k;
+        }
         case ARA::kARAContentTypeSheetChords:
             if (bytes.size() >= sizeof(ARA::ARAContentChord)) {
                 cache.decoded_event.chord = {};

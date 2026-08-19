@@ -89,8 +89,8 @@ struct YaAraFactory {
         int slot = -1;
         RegistryEntry() = default;
         explicit RegistryEntry(AraCreateDcFn dc) : create_dc(std::move(dc)) {}
-        RegistryEntry(RegistryEntry&&) = delete;
-        RegistryEntry& operator=(RegistryEntry&&) = delete;
+        RegistryEntry(RegistryEntry&&) = default;
+        RegistryEntry& operator=(RegistryEntry&&) = default;
         RegistryEntry(const RegistryEntry&) = delete;
         RegistryEntry& operator=(const RegistryEntry&) = delete;
     };
@@ -103,7 +103,7 @@ struct YaAraFactory {
     void unregister_factory() const noexcept;
 
     // Accessible from the file-scope slot trampolines in ara-factory.cpp.
-    static std::unordered_map<const char*, RegistryEntry>& registry();
+    static std::unordered_map<std::string, RegistryEntry>& registry();
     static std::mutex& registry_mutex();
 
    private:

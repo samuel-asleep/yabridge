@@ -345,9 +345,11 @@ ARA::ARAPersistentID ARA_CALL AraHostInstanceProxy::get_document_archive_id(
     ARA::ARAArchivingControllerHostRef h,
     ARA::ARAArchiveReaderHostRef reader) {
     auto* p = proxy_from_archiving(h);
-    p->last_archive_id_ =
+    const auto resp =
         p->bridge_.send_message(YaAra::HostCallback::GetDocumentArchiveID{
-            p->ara_dc_id_, reinterpret_cast<uint64_t>(reader)}).value;
+            p->ara_dc_id_, reinterpret_cast<uint64_t>(reader)});
+    std::lock_guard lock(p->last_event_mutex_);
+    p->last_archive_id_ = resp.value;
     return p->last_archive_id_.empty() ? nullptr
                                        : p->last_archive_id_.c_str();
 }
@@ -479,19 +481,58 @@ const void* ARA_CALL AraHostInstanceProxy::get_content_reader_data_for_event(
             id,
             index,
             content_type});
+    std::lock_guard lock(p->last_event_mutex_);
     p->last_event_data_ = std::move(resp.data);
     if (p->last_event_data_.empty())
         return nullptr;
+    const uint8_t* src = p->last_event_data_.data();
+    const uint8_t* end = src + p->last_event_data_.size();
+    auto read = [&](void* dst, size_t n) -> bool {
+        if (src + n > end) return false;
+        std::memcpy(dst, src, n);
+        src += n;
+        return true;
+    };
+    if (content_type ==
+        static_cast<int32_t>(ARA::kARAContentTypeStaticTuning)) {
+        p->last_tuning_ = {};
+        ARA::ARAContentTuning& t = p->last_tuning_;
+        if (!read(&t.concertPitchFrequency, sizeof(t.concertPitchFrequency)) ||
+            !read(&t.tunings, sizeof(t.tunings)))
+            return nullptr;
+        uint32_t name_len = 0;
+        if (!read(&name_len, sizeof(name_len)))
+            return nullptr;
+        if (src + name_len > end)
+            return nullptr;
+        p->last_chord_name_.assign(reinterpret_cast<const char*>(src), name_len);
+        src += name_len;
+        t.name = p->last_chord_name_.empty() ? nullptr
+                                              : p->last_chord_name_.c_str();
+        return &t;
+    }
+    if (content_type ==
+        static_cast<int32_t>(ARA::kARAContentTypeKeySignatures)) {
+        p->last_key_sig_ = {};
+        ARA::ARAContentKeySignature& k = p->last_key_sig_;
+        if (!read(&k.root, sizeof(k.root)) ||
+            !read(&k.intervals, sizeof(k.intervals)))
+            return nullptr;
+        uint32_t name_len = 0;
+        if (!read(&name_len, sizeof(name_len)))
+            return nullptr;
+        if (src + name_len > end)
+            return nullptr;
+        p->last_chord_name_.assign(reinterpret_cast<const char*>(src), name_len);
+        src += name_len;
+        k.name = p->last_chord_name_.empty() ? nullptr
+                                              : p->last_chord_name_.c_str();
+        if (!read(&k.position, sizeof(k.position)))
+            return nullptr;
+        return &k;
+    }
     if (content_type ==
         static_cast<int32_t>(ARA::kARAContentTypeSheetChords)) {
-        const uint8_t* src = p->last_event_data_.data();
-        const uint8_t* end = src + p->last_event_data_.size();
-        auto read = [&](void* dst, size_t n) -> bool {
-            if (src + n > end) return false;
-            std::memcpy(dst, src, n);
-            src += n;
-            return true;
-        };
         ARA::ARAContentChord chord{};
         uint32_t name_len = 0;
         if (!read(&chord.root, sizeof(chord.root)) ||

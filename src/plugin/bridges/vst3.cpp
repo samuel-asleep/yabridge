@@ -544,13 +544,15 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     if (!proxy->host_instance_ ||
                         !proxy->host_instance_->contentAccessControllerInterface)
                         return {0};
-                    std::lock_guard ref_lock(proxy->host_refs_mutex_);
-                    auto ctx_it = proxy->musical_context_host_refs_.find(
-                        request.musical_context_host_ref);
-                    if (ctx_it == proxy->musical_context_host_refs_.end())
-                        return {0};
-                    auto ctx = reinterpret_cast<ARA::ARAMusicalContextHostRef>(
-                        ctx_it->second);
+                    ARA::ARAMusicalContextHostRef ctx{};
+                    {
+                        std::lock_guard ref_lock(proxy->host_refs_mutex_);
+                        auto ctx_it = proxy->musical_context_host_refs_.find(
+                            request.musical_context_host_ref);
+                        if (ctx_it == proxy->musical_context_host_refs_.end())
+                            return {0};
+                        ctx = ctx_it->second;
+                    }
                     return {static_cast<int32_t>(
                         proxy->host_instance_->contentAccessControllerInterface
                             ->isMusicalContextContentAvailable(
@@ -570,13 +572,15 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     if (!proxy->host_instance_ ||
                         !proxy->host_instance_->contentAccessControllerInterface)
                         return {0};
-                    std::lock_guard ref_lock(proxy->host_refs_mutex_);
-                    auto ctx_it = proxy->musical_context_host_refs_.find(
-                        request.musical_context_host_ref);
-                    if (ctx_it == proxy->musical_context_host_refs_.end())
-                        return {0};
-                    auto ctx = reinterpret_cast<ARA::ARAMusicalContextHostRef>(
-                        ctx_it->second);
+                    ARA::ARAMusicalContextHostRef ctx{};
+                    {
+                        std::lock_guard ref_lock(proxy->host_refs_mutex_);
+                        auto ctx_it = proxy->musical_context_host_refs_.find(
+                            request.musical_context_host_ref);
+                        if (ctx_it == proxy->musical_context_host_refs_.end())
+                            return {0};
+                        ctx = ctx_it->second;
+                    }
                     return {static_cast<int32_t>(
                         proxy->host_instance_->contentAccessControllerInterface
                             ->getMusicalContextContentGrade(
@@ -596,13 +600,15 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
                     if (!proxy->host_instance_ ||
                         !proxy->host_instance_->contentAccessControllerInterface)
                         return {0};
-                    std::lock_guard ref_lock(proxy->host_refs_mutex_);
-                    auto ctx_it = proxy->musical_context_host_refs_.find(
-                        request.musical_context_host_ref);
-                    if (ctx_it == proxy->musical_context_host_refs_.end())
-                        return {0};
-                    auto ctx = reinterpret_cast<ARA::ARAMusicalContextHostRef>(
-                        ctx_it->second);
+                    ARA::ARAMusicalContextHostRef ctx{};
+                    {
+                        std::lock_guard ref_lock(proxy->host_refs_mutex_);
+                        auto ctx_it = proxy->musical_context_host_refs_.find(
+                            request.musical_context_host_ref);
+                        if (ctx_it == proxy->musical_context_host_refs_.end())
+                            return {0};
+                        ctx = ctx_it->second;
+                    }
                     ARA::ARAContentTimeRange ara_range{};
                     const ARA::ARAContentTimeRange* range_ptr = nullptr;
                     if (request.range) {

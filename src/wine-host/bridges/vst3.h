@@ -616,7 +616,7 @@ class Vst3Bridge : public HostBridge {
         ara_document_controllers_;
     std::mutex ara_document_controllers_mutex_;
     // Tracks which ARAFactory pointers have already had initializeARAWithConfiguration called.
-    std::unordered_set<const ARA::ARAFactory*> ara_initialized_factories_;
+    std::unordered_set<std::string> ara_initialized_factories_;
     // Keeps IMainFactory instances alive so their ARAFactory* pointers remain
     // valid. Keyed by factory_id string.
     std::unordered_map<std::string, Steinberg::IPtr<ARA::IMainFactory>>

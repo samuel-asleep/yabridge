@@ -193,6 +193,7 @@ private:
                          ARA::ARABool enable);
 
     // Cached archive ID string returned by get_document_archive_id()
+    mutable std::mutex last_event_mutex_;
     mutable std::string last_archive_id_;
 
     // Cached content event data returned by get_content_reader_data_for_event()
@@ -200,6 +201,8 @@ private:
 
     // Storage for deserialized ARAContentChord (name pointer lifetime).
     mutable ARA::ARAContentChord last_chord_{};
+    mutable ARA::ARAContentTuning last_tuning_{};
+    mutable ARA::ARAContentKeySignature last_key_sig_{};
     mutable std::string last_chord_name_;
 
     // Maps content reader handle -> ARAContentType, populated by

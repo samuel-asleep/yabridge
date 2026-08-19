@@ -1860,8 +1860,8 @@ void Vst3Bridge::run() {
             }
 
             // ARA requires initializeARAWithConfiguration() before the first
-            // createDocumentControllerWithDocument() call. Call it once per factory.
-            if (ara_initialized_factories_.find(ara_factory) ==
+            // createDocumentControllerWithDocument() call. Call it once per factory ID.
+            if (ara_initialized_factories_.find(request.factory_id) ==
                 ara_initialized_factories_.end()) {
                 // Pick the highest API generation the factory supports, capped
                 // at kARAAPIGeneration_2_0_Final (the highest we implement).
@@ -1876,7 +1876,7 @@ void Vst3Bridge::run() {
                 cfg.desiredApiGeneration = desired;
                 cfg.assertFunctionAddress = nullptr;
                 ara_factory->initializeARAWithConfiguration(&cfg);
-                ara_initialized_factories_.insert(ara_factory);
+                ara_initialized_factories_.insert(request.factory_id);
             }
 
             auto dc_instance = std::make_unique<AraDocumentControllerInstance>(
@@ -2660,12 +2660,43 @@ void Vst3Bridge::run() {
                 case ARA::kARAContentTypeBarSignatures:
                     copy(data, sizeof(ARA::ARAContentBarSignature));
                     break;
-                case ARA::kARAContentTypeStaticTuning:
-                    copy(data, sizeof(ARA::ARAContentTuning));
+                case ARA::kARAContentTypeStaticTuning: {
+                    const auto* e =
+                        static_cast<const ARA::ARAContentTuning*>(data);
+                    const std::string name = e->name ? std::string(e->name) : std::string{};
+                    const uint32_t name_len = static_cast<uint32_t>(name.size());
+                    auto push = [&](const void* src, size_t n) {
+                        const auto* b = static_cast<const uint8_t*>(src);
+                        bytes.insert(bytes.end(), b, b + n);
+                    };
+                    bytes.reserve(sizeof(e->concertPitchFrequency) +
+                                  sizeof(e->tunings) +
+                                  sizeof(name_len) + name_len);
+                    push(&e->concertPitchFrequency, sizeof(e->concertPitchFrequency));
+                    push(&e->tunings, sizeof(e->tunings));
+                    push(&name_len, sizeof(name_len));
+                    bytes.insert(bytes.end(), name.begin(), name.end());
                     break;
-                case ARA::kARAContentTypeKeySignatures:
-                    copy(data, sizeof(ARA::ARAContentKeySignature));
+                }
+                case ARA::kARAContentTypeKeySignatures: {
+                    const auto* e =
+                        static_cast<const ARA::ARAContentKeySignature*>(data);
+                    const std::string name = e->name ? std::string(e->name) : std::string{};
+                    const uint32_t name_len = static_cast<uint32_t>(name.size());
+                    auto push = [&](const void* src, size_t n) {
+                        const auto* b = static_cast<const uint8_t*>(src);
+                        bytes.insert(bytes.end(), b, b + n);
+                    };
+                    bytes.reserve(sizeof(e->root) + sizeof(e->intervals) +
+                                  sizeof(name_len) + name_len +
+                                  sizeof(e->position));
+                    push(&e->root, sizeof(e->root));
+                    push(&e->intervals, sizeof(e->intervals));
+                    push(&name_len, sizeof(name_len));
+                    bytes.insert(bytes.end(), name.begin(), name.end());
+                    push(&e->position, sizeof(e->position));
                     break;
+                }
                 case ARA::kARAContentTypeSheetChords: {
                     const auto* chord =
                         static_cast<const ARA::ARAContentChord*>(data);
