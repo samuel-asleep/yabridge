@@ -243,6 +243,10 @@ struct AraDocumentControllerInstance {
     // Built from host_proxy and passed to createDocumentControllerWithDocument.
     // Stored here so the pointer remains valid for the lifetime of the DC.
     ARA::ARADocumentControllerHostInstance host_instance{};
+
+    // Tracks the number of audio sources currently in the document graph.
+    // Needed to skip endRestoringDocumentFromArchive when none exist.
+    int32_t audio_source_count = 0;
 };
 
 #endif  // WITH_ARA

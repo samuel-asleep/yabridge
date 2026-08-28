@@ -2225,6 +2225,7 @@ void Vst3Bridge::run() {
             });
             if (!ref)
                 return UniversalTResult(Steinberg::kResultFalse);
+            dc->audio_source_count++;
             return reinterpret_cast<uint64_t>(ref);
         },
         [&](const YaAra::UpdateAudioSourceProperties& r)
@@ -2338,6 +2339,7 @@ void Vst3Bridge::run() {
                     dcr,
                     reinterpret_cast<ARA::ARAAudioSourceRef>(audio_source_ref));
             });
+            dc->audio_source_count--;
             return Ack{};
         },
         [&](const YaAra::AddAudioModification& r)
@@ -2895,6 +2897,11 @@ void Vst3Bridge::run() {
             auto* dc = resolve_dc(r.ara_dc_id);
             if (!dc || !dc->dc_instance)
                 return UniversalTResult(Steinberg::kResultFalse);
+            // Melodyne crashes when endRestoring is called with no audio
+            // sources in the graph. Archived states with no matching
+            // persistentID are a no-op per the ARA spec anyway.
+            if (dc->audio_source_count == 0)
+                return static_cast<int32_t>(ARA::kARATrue);
             const auto archive_reader_host_ref = r.archive_reader_host_ref;
             return dc_call(
                 dc,
