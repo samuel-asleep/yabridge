@@ -43,10 +43,35 @@ class YaMainFactoryImpl : public ARA::IMainFactory {
 
     const ARA::ARAFactory* PLUGIN_API getFactory() override;
 
+    /**
+     * The factory data and the `ARAFactory` handed to the host. ARA requires
+     * the `ARAFactory` pointer returned by `getFactory()` to stay valid for as
+     * long as the module is loaded, and hosts like Studio One release the
+     * `IMainFactory` right after calling `getFactory()` and only later call
+     * `createDocumentControllerWithDocument()` through that pointer. So this
+     * state is owned by a process-wide registry instead of by this object,
+     * and it is shared between all `IMainFactory` instances for the same
+     * bridge and factory ID.
+     */
+    struct PersistentFactory {
+        YaAraFactory factory;
+        ARA::ARAFactory ara_factory{};
+    };
+
+    /**
+     * Get the persistent factory for this bridge and `factory.factoryID`,
+     * creating it on first use. Plugin instances use this for
+     * `IPlugInEntryPoint::getFactory()` as well, so there is only a single
+     * registered `createDocumentControllerWithDocument()` trampoline per
+     * factory. Registering one per object made later registrations replace
+     * the trampoline slot of the `ARAFactory` the host already had.
+     */
+    static PersistentFactory& get_persistent_factory(Vst3PluginBridge& bridge,
+                                                     YaAraFactory&& factory);
+
    private:
     Vst3PluginBridge& bridge_;
-    YaAraFactory factory_;
-    ARA::ARAFactory ara_factory_;
+    PersistentFactory* state_;
 };
 
 #pragma GCC diagnostic pop
