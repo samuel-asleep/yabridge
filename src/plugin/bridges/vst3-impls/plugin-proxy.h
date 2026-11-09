@@ -579,9 +579,10 @@ class Vst3PluginProxyImpl : public Vst3PluginProxy {
     std::mutex function_result_cache_mutex_;
 
 #ifdef WITH_ARA
-    // ara_factory_c_struct_ contains const char* pointers into ara_factory_cache_
-    // string fields. ara_factory_cache_ must not be destroyed, moved, or
-    // reassigned while ara_factory_c_struct_ is in use.
+    // ara_factory_cache_ is a copy of the bridge's persistent ARA factory data,
+    // used to look it up again. ara_factory_c_struct_ is a copy of the
+    // persistent ARAFactory, so its pointers point into the persistent factory
+    // owned by the bridge and not into ara_factory_cache_.
     std::optional<YaAraFactory> ara_factory_cache_;
     ARA::ARAFactory ara_factory_c_struct_{};
     std::mutex ara_factory_cache_mutex_;

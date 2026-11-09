@@ -41,8 +41,9 @@ namespace {
 using PersistentFactory = YaMainFactoryImpl::PersistentFactory;
 
 /**
- * Factories created so far, keyed by the bridge and the factory ID. These are
- * never freed, see `YaMainFactoryImpl::PersistentFactory`.
+ * Factories created so far, keyed by the bridge and the factory ID. These stay
+ * alive until their bridge is destroyed, see
+ * `YaMainFactoryImpl::PersistentFactory`.
  */
 std::map<std::pair<const Vst3PluginBridge*, std::string>,
          std::unique_ptr<PersistentFactory>>&
@@ -144,6 +145,19 @@ YaMainFactoryImpl::PersistentFactory& YaMainFactoryImpl::get_persistent_factory(
         });
 
     return *state;
+}
+
+void YaMainFactoryImpl::release_persistent_factories(
+    const Vst3PluginBridge& bridge) noexcept {
+    std::lock_guard lock(persistent_factories_mutex());
+    auto& factories = persistent_factories();
+    for (auto it = factories.begin(); it != factories.end();) {
+        if (it->first.first == &bridge) {
+            it = factories.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 // The factory is intentionally not unregistered here, see `PersistentFactory`

@@ -70,10 +70,10 @@ Vst3PluginProxyImpl::~Vst3PluginProxyImpl() noexcept {
     bridge_.send_message(
         Vst3PluginProxy::Destruct{.instance_id = instance_id()});
     bridge_.unregister_plugin_proxy(*this);
-#ifdef WITH_ARA
-    if (ara_factory_cache_)
-        ara_factory_cache_->unregister_factory();
-#endif
+
+    // NOTE: `ara_factory_cache_` is only a copy of the bridge's persistent ARA
+    //       factory and doesn't own its trampoline. That one has to outlive
+    //       this instance, and it's freed together with the bridge.
 }
 
 tresult PLUGIN_API

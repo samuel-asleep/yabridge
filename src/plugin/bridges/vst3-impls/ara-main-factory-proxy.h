@@ -51,9 +51,18 @@ class YaMainFactoryImpl : public ARA::IMainFactory {
      * `createDocumentControllerWithDocument()` through that pointer. So this
      * state is owned by a process-wide registry instead of by this object,
      * and it is shared between all `IMainFactory` instances for the same
-     * bridge and factory ID.
+     * bridge and factory ID. It is freed together with the bridge, which
+     * happens when the module gets unloaded, see
+     * `release_persistent_factories()`.
      */
     struct PersistentFactory {
+        PersistentFactory() = default;
+        PersistentFactory(const PersistentFactory&) = delete;
+        PersistentFactory& operator=(const PersistentFactory&) = delete;
+
+        // Frees the trampoline slot claimed by `ara_factory`
+        ~PersistentFactory() noexcept { factory.unregister_factory(); }
+
         YaAraFactory factory;
         ARA::ARAFactory ara_factory{};
     };
@@ -68,6 +77,16 @@ class YaMainFactoryImpl : public ARA::IMainFactory {
      */
     static PersistentFactory& get_persistent_factory(Vst3PluginBridge& bridge,
                                                      YaAraFactory&& factory);
+
+    /**
+     * Free all persistent factories created for this bridge, and with them
+     * their trampoline slots. Called from the bridge's destructor, so when
+     * the module gets unloaded. Without this every module reload would use up
+     * another one of the eight slots, and a new bridge allocated at the same
+     * address would get the stale factory of the old one.
+     */
+    static void release_persistent_factories(
+        const Vst3PluginBridge& bridge) noexcept;
 
    private:
     Vst3PluginBridge& bridge_;
