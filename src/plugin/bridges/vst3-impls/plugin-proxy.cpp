@@ -16,6 +16,10 @@
 
 #include "plugin-proxy.h"
 
+#ifdef WITH_ARA
+#include "ara-main-factory-proxy.h"
+#endif
+
 #include <pluginterfaces/vst/ivstmidicontrollers.h>
 
 #ifdef WITH_ARA
@@ -66,10 +70,10 @@ Vst3PluginProxyImpl::~Vst3PluginProxyImpl() noexcept {
     bridge_.send_message(
         Vst3PluginProxy::Destruct{.instance_id = instance_id()});
     bridge_.unregister_plugin_proxy(*this);
-#ifdef WITH_ARA
-    if (ara_factory_cache_)
-        ara_factory_cache_->unregister_factory();
-#endif
+
+    // NOTE: `ara_factory_cache_` is only a copy of the bridge's persistent ARA
+    //       factory and doesn't own its trampoline. That one has to outlive
+    //       this instance, and it's freed together with the bridge.
 }
 
 tresult PLUGIN_API
@@ -1387,7 +1391,10 @@ const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
     {
         std::lock_guard lock(ara_factory_cache_mutex_);
         if (ara_factory_cache_) {
-            return &ara_factory_c_struct_;
+            YaAraFactory factory = *ara_factory_cache_;
+            return &YaMainFactoryImpl::get_persistent_factory(
+                        bridge_, std::move(factory))
+                        .ara_factory;
         }
     }
 
@@ -1405,20 +1412,18 @@ const ARA::ARAFactory* PLUGIN_API Vst3PluginProxyImpl::getFactory() {
     return std::visit(
         overload{
             [&](YaAraFactory&& factory) -> const ARA::ARAFactory* {
+                // Share the bridge-wide persistent factory with
+                // `IMainFactory`. Registering a separate trampoline per
+                // instance replaced the one in the `ARAFactory` the host got
+                // from `IMainFactory::getFactory()`, and that pointer would
+                // dangle once this instance gets destroyed.
                 std::lock_guard lock(ara_factory_cache_mutex_);
-                ara_factory_cache_ = std::move(factory);
-                ara_factory_c_struct_ = ara_factory_cache_->to_ara_factory(
-                    [this](
-                        const ARA::ARADocumentControllerHostInstance*
-                            hostInstance,
-                        const ARA::ARADocumentProperties* properties,
-                        native_size_t ara_dc_id)
-                        -> const ARA::ARADocumentControllerInstance* {
-                        return create_ara_document_controller(hostInstance,
-                                                              properties,
-                                                              ara_dc_id);
-                    });
-                return &ara_factory_c_struct_;
+                ara_factory_cache_ = factory;
+                YaMainFactoryImpl::PersistentFactory& persistent =
+                    YaMainFactoryImpl::get_persistent_factory(
+                        bridge_, std::move(factory));
+                ara_factory_c_struct_ = persistent.ara_factory;
+                return &persistent.ara_factory;
             },
             [&](const UniversalTResult&) -> const ARA::ARAFactory* {
                 bridge_.logger_.log(

@@ -26,6 +26,7 @@
 #include "vst3-impls/plugin-proxy.h"
 #ifdef WITH_ARA
 #include "vst3-impls/ara-document-controller-proxy.h"
+#include "vst3-impls/ara-main-factory-proxy.h"
 #endif
 
 using namespace std::literals::string_literals;
@@ -1292,6 +1293,13 @@ Vst3PluginBridge::Vst3PluginBridge(const ghc::filesystem::path& plugin_path)
 }
 
 Vst3PluginBridge::~Vst3PluginBridge() noexcept {
+#ifdef WITH_ARA
+    // The module is being unloaded, so the host may no longer use the
+    // `ARAFactory` pointers we handed out. This also frees their trampoline
+    // slots for the next bridge.
+    YaMainFactoryImpl::release_persistent_factories(*this);
+#endif
+
     try {
         // Drop all work make sure all sockets are closed
         plugin_host_->terminate();

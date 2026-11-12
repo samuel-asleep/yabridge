@@ -18,7 +18,12 @@
 
 #include "ara-main-factory-proxy.h"
 
+#include <map>
+#include <memory>
+#include <mutex>
 #include <sstream>
+#include <string>
+#include <utility>
 
 #include "../../../common/serialization/vst3/ara-document-controller.h"
 #include "../vst3.h"
@@ -31,14 +36,61 @@ IMPLEMENT_FUNKNOWN_METHODS(YaMainFactoryImpl,
                            ARA::IMainFactory::iid)
 #pragma GCC diagnostic pop
 
+namespace {
+
+using PersistentFactory = YaMainFactoryImpl::PersistentFactory;
+
+/**
+ * Factories created so far, keyed by the bridge and the factory ID. These stay
+ * alive until their bridge is destroyed, see
+ * `YaMainFactoryImpl::PersistentFactory`.
+ */
+std::map<std::pair<const Vst3PluginBridge*, std::string>,
+         std::unique_ptr<PersistentFactory>>&
+persistent_factories() {
+    static std::map<std::pair<const Vst3PluginBridge*, std::string>,
+                    std::unique_ptr<PersistentFactory>>
+        factories;
+    return factories;
+}
+
+std::mutex& persistent_factories_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+}  // namespace
+
 YaMainFactoryImpl::YaMainFactoryImpl(Vst3PluginBridge& bridge,
                                      YaAraFactory&& factory) noexcept
-    : bridge_(bridge), factory_(std::move(factory)) {
-    ara_factory_ = factory_.to_ara_factory(
-        [this](const ARA::ARADocumentControllerHostInstance* hostInstance,
-               const ARA::ARADocumentProperties* properties,
-               native_size_t ara_dc_id)
+    : bridge_(bridge),
+      state_(&get_persistent_factory(bridge, std::move(factory))){
+          FUNKNOWN_CTOR}
+
+YaMainFactoryImpl::PersistentFactory& YaMainFactoryImpl::get_persistent_factory(
+    Vst3PluginBridge& bridge,
+    YaAraFactory&& factory) {
+    std::lock_guard lock(persistent_factories_mutex());
+    auto& slot =
+        persistent_factories()[std::pair(&bridge, factory.factoryID)];
+    if (slot) {
+        return *slot;
+    }
+
+    slot = std::make_unique<PersistentFactory>();
+    PersistentFactory* state = slot.get();
+    state->factory = std::move(factory);
+
+    // Captures the bridge and the persistent state instead of `this`, since
+    // the `IMainFactory` may be destroyed long before the host uses the
+    // factory
+    state->ara_factory = state->factory.to_ara_factory(
+        [&bridge, state](
+            const ARA::ARADocumentControllerHostInstance* hostInstance,
+            const ARA::ARADocumentProperties* properties,
+            native_size_t ara_dc_id)
             -> const ARA::ARADocumentControllerInstance* {
+            Vst3PluginBridge& bridge_ = bridge;
             try {
                 const std::string doc_name =
                     (properties && properties->name) ? properties->name : "";
@@ -46,20 +98,20 @@ YaMainFactoryImpl::YaMainFactoryImpl(Vst3PluginBridge& bridge,
                 std::ostringstream msg;
                 msg << "[ARA] IMainFactory::createDocumentControllerWithDocument("
                     << "name=\"" << doc_name << "\", factoryID=\""
-                    << factory_.factoryID << "\")";
+                    << state->factory.factoryID << "\")";
                 bridge_.logger_.log(msg.str());
 
                 // Pre-register so host callbacks fired during
                 // createDocumentControllerWithDocument can resolve ara_dc_id.
                 const ARA::ARADocumentControllerInstance* dc_instance =
                     bridge_.register_ara_document_controller(
-                        ara_dc_id, hostInstance, &ara_factory_);
+                        ara_dc_id, hostInstance, &state->ara_factory);
 
                 auto response = bridge_.send_message(
                     YaAra::CreateDocumentController{
                         .instance_id = 0,
                         .ara_dc_id = ara_dc_id,
-                        .factory_id = factory_.factoryID,
+                        .factory_id = state->factory.factoryID,
                         .document_properties = YaAraDocumentProperties{
                             .name = doc_name}});
 
@@ -91,14 +143,28 @@ YaMainFactoryImpl::YaMainFactoryImpl(Vst3PluginBridge& bridge,
                 return nullptr;
             }
         });
+
+    return *state;
 }
 
-YaMainFactoryImpl::~YaMainFactoryImpl() noexcept {
-    factory_.unregister_factory();
+void YaMainFactoryImpl::release_persistent_factories(
+    const Vst3PluginBridge& bridge) noexcept {
+    std::lock_guard lock(persistent_factories_mutex());
+    auto& factories = persistent_factories();
+    for (auto it = factories.begin(); it != factories.end();) {
+        if (it->first.first == &bridge) {
+            it = factories.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
+
+// The factory is intentionally not unregistered here, see `PersistentFactory`
+YaMainFactoryImpl::~YaMainFactoryImpl() noexcept {}
 
 const ARA::ARAFactory* PLUGIN_API YaMainFactoryImpl::getFactory() {
-    return &ara_factory_;
+    return &state_->ara_factory;
 }
 
 #endif  // WITH_ARA

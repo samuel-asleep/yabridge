@@ -45,17 +45,32 @@ void YaProcessData::repopulate(const Steinberg::Vst::ProcessData& process_data,
 
         // We copy the actual input audio for every bus to the shared memory
         // object
+        // NOTE: Hosts may pass null channel buffers. Studio One does this for
+        //       ARA plugins, which get their audio through the ARA document
+        //       instead. Treat those inputs as silence instead of copying from
+        //       a null pointer.
         for (int channel = 0; channel < inputs_[bus].numChannels; channel++) {
             if (process_data.symbolicSampleSize == Steinberg::Vst::kSample64) {
-                std::copy_n(process_data.inputs[bus].channelBuffers64[channel],
-                            process_data.numSamples,
-                            shared_audio_buffers.input_channel_ptr<double>(
-                                bus, channel));
+                double* shm_channel =
+                    shared_audio_buffers.input_channel_ptr<double>(bus,
+                                                                   channel);
+                const auto* buffers = process_data.inputs[bus].channelBuffers64;
+                if (buffers && buffers[channel]) {
+                    std::copy_n(buffers[channel], process_data.numSamples,
+                                shm_channel);
+                } else {
+                    std::fill_n(shm_channel, process_data.numSamples, 0.0);
+                }
             } else {
-                std::copy_n(process_data.inputs[bus].channelBuffers32[channel],
-                            process_data.numSamples,
-                            shared_audio_buffers.input_channel_ptr<float>(
-                                bus, channel));
+                float* shm_channel =
+                    shared_audio_buffers.input_channel_ptr<float>(bus, channel);
+                const auto* buffers = process_data.inputs[bus].channelBuffers32;
+                if (buffers && buffers[channel]) {
+                    std::copy_n(buffers[channel], process_data.numSamples,
+                                shm_channel);
+                } else {
+                    std::fill_n(shm_channel, process_data.numSamples, 0.0f);
+                }
             }
         }
     }
@@ -210,19 +225,24 @@ void YaProcessData::write_back_outputs(
         //       by the plugin during `YaProcessData::repopulate()`.
         for (int channel = 0; channel < outputs_[bus].numChannels; channel++) {
             // We copy the output audio for every bus from the shared memory
-            // object back to the buffer provided by the host
+            // object back to the buffer provided by the host. Null output
+            // buffers (see `repopulate()`) are skipped.
             if (process_data.symbolicSampleSize == Steinberg::Vst::kSample64) {
-                std::copy_n(
-                    shared_audio_buffers.output_channel_ptr<double>(bus,
-                                                                    channel),
-                    process_data.numSamples,
-                    process_data.outputs[bus].channelBuffers64[channel]);
+                auto* const* buffers = process_data.outputs[bus].channelBuffers64;
+                if (buffers && buffers[channel]) {
+                    std::copy_n(
+                        shared_audio_buffers.output_channel_ptr<double>(
+                            bus, channel),
+                        process_data.numSamples, buffers[channel]);
+                }
             } else {
-                std::copy_n(
-                    shared_audio_buffers.output_channel_ptr<float>(bus,
-                                                                   channel),
-                    process_data.numSamples,
-                    process_data.outputs[bus].channelBuffers32[channel]);
+                auto* const* buffers = process_data.outputs[bus].channelBuffers32;
+                if (buffers && buffers[channel]) {
+                    std::copy_n(
+                        shared_audio_buffers.output_channel_ptr<float>(
+                            bus, channel),
+                        process_data.numSamples, buffers[channel]);
+                }
             }
         }
     }

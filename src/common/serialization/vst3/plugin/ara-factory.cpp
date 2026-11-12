@@ -22,56 +22,48 @@
 #include "ara-factory.h"
 
 // ---------------------------------------------------------------------------
-// Static registry
+// Process-wide DC ID counter and trampoline slots
 // ---------------------------------------------------------------------------
 
-std::unordered_map<std::string, YaAraFactory::RegistryEntry>&
-YaAraFactory::registry() {
-    static std::unordered_map<std::string, RegistryEntry> r;
-    return r;
-}
+namespace {
 
-std::mutex& YaAraFactory::registry_mutex() {
-    static std::mutex m;
-    return m;
-}
+constexpr int num_slots = 8;
 
-// ---------------------------------------------------------------------------
-// Process-wide DC ID counter and per-factory trampoline pool
-// ---------------------------------------------------------------------------
+std::atomic<native_size_t> g_next_dc_id{1};
 
-static std::atomic<native_size_t> g_next_dc_id{1};
+// The callback for every trampoline slot, indexed by slot. An empty callback
+// means the slot is free.
+std::mutex g_slots_mutex;
+AraCreateDcFn g_slots[num_slots];
 
-static bool g_slot_used[8] = {};
-
-// Each trampoline looks up registry entry by slot index.
-// Defined as a template to generate 8 distinct function addresses.
+// Each trampoline calls the callback in its own slot. Defined as a template to
+// generate distinct function addresses.
 template <int N>
-static const ARA::ARADocumentControllerInstance* ARA_CALL
+const ARA::ARADocumentControllerInstance* ARA_CALL
 slot_trampoline(const ARA::ARADocumentControllerHostInstance* hostInstance,
                 const ARA::ARADocumentProperties* properties) {
     AraCreateDcFn callback;
+    {
+        std::lock_guard lock(g_slots_mutex);
+        callback = g_slots[N];
+    }
+    if (!callback) {
+        fprintf(stderr,
+                "yabridge: ARA createDocumentControllerWithDocument() called "
+                "on trampoline slot %d which has no registered factory.\n",
+                N);
+        return nullptr;
+    }
+
     const native_size_t dc_id =
         g_next_dc_id.fetch_add(1, std::memory_order_relaxed);
-    {
-        std::lock_guard lock(YaAraFactory::registry_mutex());
-        auto& reg = YaAraFactory::registry();
-        for (auto& [key, entry] : reg) {
-            if (entry.slot == N) {
-                callback = entry.create_dc;
-                break;
-            }
-        }
-    }
-    if (!callback)
-        return nullptr;
     return callback(hostInstance, properties, dc_id);
 }
 
 using TrampFn = const ARA::ARADocumentControllerInstance* (ARA_CALL*)(
     const ARA::ARADocumentControllerHostInstance*,
     const ARA::ARADocumentProperties*);
-static const TrampFn g_trampolines[8] = {
+const TrampFn g_trampolines[num_slots] = {
     slot_trampoline<0>,
     slot_trampoline<1>,
     slot_trampoline<2>,
@@ -81,6 +73,74 @@ static const TrampFn g_trampolines[8] = {
     slot_trampoline<6>,
     slot_trampoline<7>,
 };
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Copying and moving
+// ---------------------------------------------------------------------------
+
+// The pointer caches are rebuilt lazily by fill_factory_fields() since they
+// point into the strings of the source object, and the slot stays with its
+// owner
+YaAraFactory::YaAraFactory(const YaAraFactory& other)
+    : lowestSupportedApiGeneration(other.lowestSupportedApiGeneration),
+      highestSupportedApiGeneration(other.highestSupportedApiGeneration),
+      structSize(other.structSize),
+      supportedPlaybackTransformationFlags(
+          other.supportedPlaybackTransformationFlags),
+      supportsStoringAudioFileChunks(other.supportsStoringAudioFileChunks),
+      factoryID(other.factoryID),
+      plugInName(other.plugInName),
+      manufacturerName(other.manufacturerName),
+      informationURL(other.informationURL),
+      version(other.version),
+      documentArchiveID(other.documentArchiveID),
+      compatibleDocumentArchiveIDs(other.compatibleDocumentArchiveIDs),
+      analyzeableContentTypes(other.analyzeableContentTypes) {}
+
+YaAraFactory& YaAraFactory::operator=(const YaAraFactory& other) {
+    if (this != &other) {
+        unregister_factory();
+        YaAraFactory copy(other);
+        *this = std::move(copy);
+    }
+    return *this;
+}
+
+YaAraFactory::YaAraFactory(YaAraFactory&& other) noexcept {
+    *this = std::move(other);
+}
+
+YaAraFactory& YaAraFactory::operator=(YaAraFactory&& other) noexcept {
+    if (this != &other) {
+        unregister_factory();
+
+        lowestSupportedApiGeneration = other.lowestSupportedApiGeneration;
+        highestSupportedApiGeneration = other.highestSupportedApiGeneration;
+        structSize = other.structSize;
+        supportedPlaybackTransformationFlags =
+            other.supportedPlaybackTransformationFlags;
+        supportsStoringAudioFileChunks = other.supportsStoringAudioFileChunks;
+        factoryID = std::move(other.factoryID);
+        plugInName = std::move(other.plugInName);
+        manufacturerName = std::move(other.manufacturerName);
+        informationURL = std::move(other.informationURL);
+        version = std::move(other.version);
+        documentArchiveID = std::move(other.documentArchiveID);
+        compatibleDocumentArchiveIDs =
+            std::move(other.compatibleDocumentArchiveIDs);
+        analyzeableContentTypes = std::move(other.analyzeableContentTypes);
+
+        // An `ARAFactory` built from `other` points into its strings, so
+        // moving a registered factory would leave that struct dangling
+        assert(other.slot_ < 0);
+        compatible_archive_id_ptrs_.clear();
+        content_type_ptrs_.clear();
+        fill_called_ = false;
+    }
+    return *this;
+}
 
 // ---------------------------------------------------------------------------
 // fill_factory_fields
@@ -140,35 +200,30 @@ ARA::ARAFactory YaAraFactory::to_ara_factory(
     ARA::ARAFactory factory{};
     fill_factory_fields(factory);
 
-    if (create_dc) {
-        std::lock_guard lock(registry_mutex());
-        int slot = -1;
-        for (int i = 0; i < 8; ++i) {
-            if (!g_slot_used[i]) {
-                slot = i;
-                break;
-            }
-        }
-        if (slot < 0) {
-            fprintf(stderr,
-                    "yabridge: ARA factory trampoline pool exhausted "
-                    "(all 8 slots in use)\n");
-            factory.createDocumentControllerWithDocument =
-                stub_create_document_controller;
-            return factory;
-        }
-        g_slot_used[slot] = true;
-        factory.createDocumentControllerWithDocument = g_trampolines[slot];
-
-        auto& entry = registry()[factoryID];
-        entry.create_dc = std::move(create_dc);
-        entry.slot = slot;
-        registered_ = true;
-    } else {
-        factory.createDocumentControllerWithDocument =
-            stub_create_document_controller;
+    factory.createDocumentControllerWithDocument =
+        stub_create_document_controller;
+    if (!create_dc) {
+        return factory;
     }
 
+    // Registering the same object twice would leak its first slot
+    unregister_factory();
+
+    std::lock_guard lock(g_slots_mutex);
+    for (int i = 0; i < num_slots; ++i) {
+        if (!g_slots[i]) {
+            g_slots[i] = std::move(create_dc);
+            slot_ = i;
+            factory.createDocumentControllerWithDocument = g_trampolines[i];
+            return factory;
+        }
+    }
+
+    fprintf(stderr,
+            "yabridge: ARA factory trampoline pool exhausted (all %d slots "
+            "in use), createDocumentControllerWithDocument() for factory "
+            "'%s' will always return null\n",
+            num_slots, factoryID.c_str());
     return factory;
 }
 
@@ -177,16 +232,13 @@ ARA::ARAFactory YaAraFactory::to_ara_factory(
 // ---------------------------------------------------------------------------
 
 void YaAraFactory::unregister_factory() const noexcept {
-    if (!registered_)
+    if (slot_ < 0) {
         return;
-    std::lock_guard lock(registry_mutex());
-    auto it = registry().find(factoryID);
-    if (it != registry().end()) {
-        if (it->second.slot >= 0 && it->second.slot < 8)
-            g_slot_used[it->second.slot] = false;
-        registry().erase(it);
     }
-    registered_ = false;
+
+    std::lock_guard lock(g_slots_mutex);
+    g_slots[slot_] = nullptr;
+    slot_ = -1;
 }
 
 // ---------------------------------------------------------------------------

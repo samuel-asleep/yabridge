@@ -23,7 +23,6 @@
 #include <functional>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <ARAInterface.h>
@@ -77,34 +76,27 @@ struct YaAraFactory {
     // this YaAraFactory's string members. Both this object and the returned
     // factory must remain at a stable address for the host's lifetime.
     //
-    // If create_dc is provided, registers it in the global factory registry so
-    // the createDocumentControllerWithDocument trampoline can route to the
-    // bridge. Call unregister_factory() when the owning object is destroyed.
+    // If create_dc is provided, it is stored in one of the 8 trampoline slots
+    // so the createDocumentControllerWithDocument trampoline can route to the
+    // bridge. Slots are keyed by slot index and not by factory ID, so two
+    // bridges exposing the same factory ID each get their own slot. Call
+    // unregister_factory() on this exact object when the factory is no longer
+    // needed. Copies of a registered object do not own its slot.
     //
-    // When create_dc is null, a stub returning nullptr is installed instead.
-
-    // Registry entry: create_dc callback + assigned trampoline slot index.
-    struct RegistryEntry {
-        AraCreateDcFn create_dc;
-        int slot = -1;
-        RegistryEntry() = default;
-        explicit RegistryEntry(AraCreateDcFn dc) : create_dc(std::move(dc)) {}
-        RegistryEntry(RegistryEntry&&) = default;
-        RegistryEntry& operator=(RegistryEntry&&) = default;
-        RegistryEntry(const RegistryEntry&) = delete;
-        RegistryEntry& operator=(const RegistryEntry&) = delete;
-    };
-
+    // When create_dc is null, or when all slots are in use, a stub returning
+    // nullptr is installed instead.
     ARA::ARAFactory to_ara_factory(AraCreateDcFn create_dc = nullptr) const;
 
-    // Remove the factory from the global registry. Must be called when the
-    // owning object is destroyed, if to_ara_factory was called with a non-null
-    // create_dc.
+    // Free the trampoline slot claimed by to_ara_factory(), if any.
     void unregister_factory() const noexcept;
 
-    // Accessible from the file-scope slot trampolines in ara-factory.cpp.
-    static std::unordered_map<std::string, RegistryEntry>& registry();
-    static std::mutex& registry_mutex();
+    YaAraFactory() = default;
+    // Copies never take over the trampoline slot, so destroying or
+    // unregistering a copy cannot disable the original's trampoline
+    YaAraFactory(const YaAraFactory& other);
+    YaAraFactory& operator=(const YaAraFactory& other);
+    YaAraFactory(YaAraFactory&& other) noexcept;
+    YaAraFactory& operator=(YaAraFactory&& other) noexcept;
 
    private:
     static void ARA_CALL stub_initialize(
@@ -122,7 +114,8 @@ struct YaAraFactory {
 
     mutable std::vector<const char*> compatible_archive_id_ptrs_;
     mutable std::vector<ARA::ARAContentType> content_type_ptrs_;
-    mutable bool registered_ = false;
+    // The trampoline slot claimed by to_ara_factory(), or -1
+    mutable int slot_ = -1;
     mutable bool fill_called_ = false;
 };
 
